@@ -35,10 +35,27 @@ services:
         value: none
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: "60"
+      # template = deterministic, zero extra RAM — the only provider that
+      # reliably fits Render Free's 512MB alongside this app's ~226MB
+      # resting footprint (measured; see app/core/model_registry.py).
+      # Upgrading to Render's paid Starter plan (2GB)? Change this one
+      # value to `llama_cpp` and redeploy — no code or Dockerfile changes
+      # needed, the model dependencies are already installed in the image
+      # and the GGUF model downloads once on first use.
       - key: MODEL_PROVIDER
         value: template
       - key: MODEL_NAME
         value: Qwen/Qwen2.5-0.5B-Instruct
+      - key: MODEL_MAX_TOKENS
+        value: "384"
+      - key: MODEL_TEMPERATURE
+        value: "0.2"
+      - key: LLAMACPP_CTX
+        value: "640"
+      - key: LLAMACPP_THREADS
+        value: "2"
+      - key: LLAMACPP_BATCH
+        value: "64"
       - key: EMBEDDING_MODEL
         value: BAAI/bge-small-en-v1.5
       - key: VECTOR_INDEX_PATH
@@ -46,11 +63,11 @@ services:
       - key: KNOWLEDGE_VERSION
         value: "2026.08.1"
       - key: HYBRID_SEMANTIC_WEIGHT
-        value: "0.70"
+        value: "0.65"
       - key: HYBRID_KEYWORD_WEIGHT
-        value: "0.30"
+        value: "0.35"
       - key: RETRIEVAL_TOP_K
-        value: "6"
+        value: "8"
       - key: GROUNDING_MIN_SIMILARITY
         value: "0.42"
       - key: ENABLE_VOICE

@@ -44,12 +44,38 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173"
 
     # --- Model layer ---
-    MODEL_PROVIDER: Literal["template", "local_transformers", "ollama"] = "template"
+    # llama_cpp = quantized GGUF model via llama.cpp (CPU, no torch). NOT
+    # the default — measured directly (see model_registry.py): the app's
+    # existing RAG stack (embeddings + FAISS + FastAPI + DB pool) already
+    # uses ~226MB RSS at rest, and even the smallest instruct model small
+    # enough to be reliable (not prone to fabricating clinical claims —
+    # sub-200M models tested as unsafe) adds another ~350-450MB, pushing
+    # total RSS to 600-670MB. That's over Render Free's 512MB. `template`
+    # stays the default for that plan; switch to `llama_cpp` once deployed
+    # somewhere with more headroom (e.g. Render's paid Starter, 2GB) — it's
+    # a one-line env var change, no code changes needed.
+    MODEL_PROVIDER: Literal["template", "llama_cpp", "local_transformers", "ollama"] = "template"
     MODEL_NAME: str = "Qwen/Qwen2.5-0.5B-Instruct"
     MODEL_QUANTIZATION: str = "none"
-    MODEL_MAX_TOKENS: int = 512
+    MODEL_MAX_TOKENS: int = 384
     MODEL_TEMPERATURE: float = 0.2
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+
+    # --- llama_cpp provider ---
+    # SmolLM2-360M-Instruct, not Qwen: Qwen's ~152K-token vocabulary makes
+    # llama.cpp's internal logits buffer (n_ctx * vocab_size) alone cost
+    # several hundred MB regardless of quantization — measured ~620MB extra
+    # RSS at n_ctx=1024. SmolLM2's ~49K vocab avoids that blowup.
+    LLAMACPP_REPO_ID: str = "bartowski/SmolLM2-360M-Instruct-GGUF"
+    LLAMACPP_FILENAME: str = "SmolLM2-360M-Instruct-Q4_K_M.gguf"
+    LLAMACPP_MODEL_PATH: str = str(BACKEND_ROOT / "models" / "SmolLM2-360M-Instruct-Q4_K_M.gguf")
+    LLAMACPP_CTX: int = 640
+    LLAMACPP_THREADS: int = 2
+    # Deliberately NOT equal to LLAMACPP_CTX — see model_registry.py's
+    # LlamaCppProvider docstring for why a large batch blows the RAM budget
+    # on a big-vocab model. Less relevant for SmolLM2's small vocab, but
+    # kept modest since a short rephrase prompt never needs a large batch.
+    LLAMACPP_BATCH: int = 64
 
     # --- Embeddings / retrieval ---
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"

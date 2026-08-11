@@ -33,16 +33,35 @@ _YEAR_RE = re.compile(r"\b(1[5-9]\d{2}|20\d{2})\b")
 # first word since capitalization there is just normal sentence case.
 _PROPER_NOUN_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b")
 
+# A rephrasing model asked to discuss "when to seek care" has an observed,
+# repeatable failure mode: reaching for a scary-but-plausible serious
+# condition ("...could be a sign of stroke, brain tumor...") that reads as
+# reasonable caution but was never in the retrieved evidence — a topically
+# "on-brand" fabrication that embedding similarity alone does not catch,
+# since the sentence is still semantically close to the headache/care
+# evidence it's embedded near. These are lowercase common nouns, so the
+# proper-noun check above never sees them either. Checked the same way as
+# proper nouns/years: only flagged if genuinely absent from every retrieved
+# chunk, so a condition the evidence itself actually discusses is fine.
+_HIGH_STAKES_TERMS = (
+    "stroke", "brain tumor", "brain tumour", "aneurysm", "meningitis", "sepsis",
+    "heart attack", "myocardial infarction", "cardiac arrest", "embolism",
+    "hemorrhage", "haemorrhage", "internal bleeding", "organ failure", "blood clot",
+    "malignant", "malignancy", "leukemia", "leukaemia", "tumor", "tumour",
+)
+_HIGH_STAKES_RE = re.compile(r"\b(" + "|".join(re.escape(t) for t in _HIGH_STAKES_TERMS) + r")\b", re.IGNORECASE)
+
 
 def _unsupported_entities(sentence: str, evidence_text_lower: str) -> list[str]:
     """Cheap, deterministic entailment check layered on top of embedding
-    similarity: specific names/years asserted in a sentence but absent from
-    every retrieved chunk are a strong fabrication signal that topic-level
-    semantic similarity alone can miss (a sentence can be "about migraines"
-    and still invent a person, date, or statistic)."""
+    similarity: specific names/years/high-stakes conditions asserted in a
+    sentence but absent from every retrieved chunk are a strong fabrication
+    signal that topic-level semantic similarity alone can miss (a sentence
+    can be "about migraines" and still invent a person, date, or a scarier
+    condition than what's actually supported)."""
     words = sentence.strip().split(" ", 1)
     rest = words[1] if len(words) > 1 else ""
-    candidates = _PROPER_NOUN_RE.findall(rest) + _YEAR_RE.findall(sentence)
+    candidates = _PROPER_NOUN_RE.findall(rest) + _YEAR_RE.findall(sentence) + _HIGH_STAKES_RE.findall(sentence)
     return [c for c in candidates if c.lower() not in evidence_text_lower]
 
 

@@ -6,11 +6,17 @@
 # output) — this image does NOT rebuild it on every startup or every
 # build, per §75 ("do not rebuild vector indexes on startup").
 #
-# Default MODEL_PROVIDER=template needs no extra ML dependencies beyond
-# the light `requirements.txt` (ONNX embeddings only, no torch) — this is
-# what keeps the image small enough, and the app fast enough to start,
-# for Render's free tier. See requirements-full.txt if you deploy
-# somewhere with enough RAM for MODEL_PROVIDER=local_transformers.
+# MODEL_PROVIDER defaults to `template` (deterministic, zero extra RAM) —
+# measured directly, Render Free's 512MB doesn't have room for any LLM
+# alongside this app's existing ~226MB resting footprint (see
+# app/core/model_registry.py for the numbers). requirements-llm.txt
+# (llama-cpp-python — no torch, ~20-40MB) is still installed below so that
+# setting MODEL_PROVIDER=llama_cpp is a genuine one-env-var upgrade on a
+# host with more headroom (e.g. Render's paid Starter, 2GB): the GGUF
+# model is fetched once via huggingface_hub on first use and cached, no
+# image rebuild required. See requirements-full.txt for the heavier
+# transformers/torch-based `local_transformers` provider instead, if
+# preferred.
 
 FROM python:3.11-slim AS base
 
@@ -26,8 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps first so this layer is cached across code changes.
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+# llama-cpp-python ships no PyPI wheels (source dist only) — install from
+# the maintainer's prebuilt CPU wheel index so the build stays fast and
+# compiler-free (see requirements-llm.txt).
+COPY requirements.txt requirements-llm.txt .
+RUN pip install -r requirements.txt \
+    && pip install -r requirements-llm.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
 # App code + the prebuilt knowledge base artifacts.
 COPY app ./app

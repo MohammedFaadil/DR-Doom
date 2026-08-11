@@ -152,6 +152,37 @@ def _is_related(chunk: RetrievedChunk, topic_words: set[str], domain: str | None
     return domain is not None and chunk.chunk.medical_domain == domain
 
 
+def _heading_count(text: str) -> int:
+    return sum(1 for line in text.split("\n") if line.strip().startswith("## "))
+
+
+def _rephrase_or_fallback(composed: str, top: list[RetrievedChunk]) -> tuple[str, GroundingResult, str]:
+    """Rephrase via the active model provider, then validate grounding —
+    but a small local model asked to rewrite a long multi-section note has
+    a real, observed failure mode of stopping early (producing only the
+    first section) rather than fabricating or refusing outright. That
+    passes grounding validation just fine (what little it wrote is
+    accurate) while silently discarding most of the answer, which is its
+    own kind of unsafe for a medical app. Detect that here — heading count
+    dropping, or the grounded text shrinking drastically — and fall back
+    to the original composed text, which is safe by construction (built
+    directly from retrieved evidence) and re-validated the same way rather
+    than trusted blindly.
+    """
+    manager = get_model_manager()
+    rephrased, provider = manager.rephrase(composed)
+    grounding = validate_grounding(rephrased, top)
+
+    is_real_rephrase = provider not in ("template", "template_fallback")
+    lost_sections = is_real_rephrase and _heading_count(grounding.grounded_text) < _heading_count(composed)
+    lost_most_content = is_real_rephrase and len(grounding.grounded_text) < 0.5 * len(composed)
+
+    if not grounding.grounded_text or lost_sections or lost_most_content:
+        fallback_grounding = validate_grounding(composed, top)
+        return fallback_grounding.grounded_text or composed, fallback_grounding, "template_fallback"
+    return grounding.grounded_text, grounding, provider
+
+
 def compose_factual_answer(retrieval: RetrievalResult) -> ExplanationOutput:
     top = [c for c in retrieval.chunks if c.rerank_score > 0]
     if not top or top[0].rerank_score < MIN_RETRIEVAL_SCORE_FOR_ANSWER:
@@ -173,10 +204,8 @@ def compose_factual_answer(retrieval: RetrievalResult) -> ExplanationOutput:
 
     body = "\n\n".join(body_parts)
 
-    manager = get_model_manager()
-    rephrased, provider = manager.rephrase(body)
-    grounding = validate_grounding(rephrased, top)
-    final = grounding.grounded_text or INSUFFICIENT_EVIDENCE_MESSAGE
+    final, grounding, provider = _rephrase_or_fallback(body, top)
+    final = final or INSUFFICIENT_EVIDENCE_MESSAGE
 
     cited = unique_docs[: len(body_parts)]
     message = f"{final}\n\n" + _sources_block(cited)
@@ -231,10 +260,8 @@ def compose_assessment(state: dict, retrieval: RetrievalResult) -> ExplanationOu
     ]
     composed = "\n\n".join(sections)
 
-    manager = get_model_manager()
-    rephrased, provider = manager.rephrase(composed)
-    grounding = validate_grounding(rephrased, top)
-    final = grounding.grounded_text or composed
+    final, grounding, provider = _rephrase_or_fallback(composed, top)
+    final = final or composed
 
     cited = explain_chunks + care_chunks + warning_chunks
     message = f"{final}\n\n" + _sources_block(cited)

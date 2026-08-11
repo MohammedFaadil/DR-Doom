@@ -116,31 +116,60 @@ Instead:
 ## 4. Model architecture
 
 `backend/app/core/model_registry.py` defines a small provider interface
-(`GenerationProvider.rephrase(composed_text) -> text`) with three
+(`GenerationProvider.rephrase(composed_text) -> text`) with four
 implementations, selected via `MODEL_PROVIDER`:
 
-| Provider | What it does | RAM | Default |
+| Provider | What it does | RAM (measured) | Default |
 |---|---|---|---|
 | `template` | Deterministic pass-through — the actual "model" is the structured template composer in `app/agents/explanation.py`. Zero extra RAM. | ~0 | ✅ yes |
-| `local_transformers` | Loads a small local HF instruct model (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) to paraphrase the composed text in plainer language. Lazy-loaded on first use. | ~1-2 GB | no |
+| `llama_cpp` | Quantized GGUF model (`SmolLM2-360M-Instruct`) via `llama-cpp-python` — pure C++ inference, no torch. | ~350-450MB extra | no |
+| `local_transformers` | Loads a small local HF instruct model (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) via `transformers`/torch to paraphrase the composed text. Lazy-loaded on first use. | ~2GB+ extra | no |
 | `ollama` | Calls a locally-running Ollama server over HTTP. | depends on your Ollama setup | no |
 
 `ModelManager` (`app/core/model_manager.py`) wraps whichever provider is
 configured and **always falls back to `template`** if the configured
-provider fails to load or errors at call time (§47) — the app never
-crashes or silently returns nothing just because a model failed.
+provider fails to load, errors at call time, or — for `llama_cpp` /
+`local_transformers` specifically — produces a rephrase that drops whole
+sections or most of its content relative to the original (§47, and see
+`app/agents/explanation.py::_rephrase_or_fallback`) — the app never
+crashes, hangs, or silently returns an incomplete answer just because a
+small model under-delivered.
 
-**Why `template` is the default:** Render Free gives ~512MB RAM shared with
-the rest of the app (DB connections, FAISS index, embedding model). A real
-LLM — even a small quantized one — does not reliably fit alongside that,
-and pretending otherwise (§92 "do not fake functionality") would mean
-either crashing on deploy or silently returning nothing. The deterministic
-template composer is not a placeholder — it's the intentional, permanently
-correct default for a resource-constrained deployment, and it's what keeps
-grounding trivially perfect (the text *is* the evidence). Swapping to
-`local_transformers` or `ollama` needs zero application code changes,
-only environment variables + (for `local_transformers`)
-`pip install -r requirements-full.txt`.
+**Why `template` is the default:** measured directly while building the
+`llama_cpp` provider — this app's existing RAG stack (embeddings + FAISS +
+FastAPI + DB pool) already uses ~226MB RSS at rest, and Render Free's
+budget is 512MB total. Two things were tested, not assumed:
+
+1. **Vocabulary size dominates a GGUF model's actual RAM cost**, more than
+   the model's parameter count or quantization level. `llama.cpp`
+   allocates an internal buffer roughly sized `n_ctx * vocab_size`; Qwen's
+   ~152K-token vocabulary made that buffer alone cost ~620MB extra RSS —
+   over the *entire* Render Free budget by itself, regardless of
+   quantization. SmolLM2's ~49K-token vocabulary avoids that specific
+   blowup, which is why it's the `llama_cpp` default instead of Qwen.
+2. **Going smaller than ~360M params isn't a free RAM win.** A
+   135M-parameter model uses meaningfully less RAM (~170MB vs ~350-450MB)
+   but fabricated clinical claims not present in the source text in
+   repeated testing (e.g. inventing symptoms) — unacceptable for a medical
+   app even with `GroundingValidator` as a backstop. 360M was the smallest
+   tier that stayed reliably grounded to its input.
+
+Even at 360M params, on this app's longer multi-section assessment output,
+the model sometimes stops after the first section instead of completing
+the rewrite — a real capacity limit, not a bug. `_rephrase_or_fallback`
+catches this (comparing section-heading counts and content length between
+the rephrase and the original) and safely reverts to the deterministic
+template text rather than showing an incomplete answer.
+
+Net: `llama_cpp` needs ~350-450MB on top of the app's ~226MB baseline —
+600-670MB total, over Render Free's 512MB. It's a genuinely good fit for
+Render's paid **Starter** plan (2GB) or any host with real headroom, and
+enabling it there is a **one-line env var change** (`MODEL_PROVIDER=llama_cpp`
+in the Render dashboard, then redeploy) — the dependencies are already
+installed in the Docker image (`requirements-llm.txt`, no torch), and the
+GGUF model downloads once via `huggingface_hub` on first use. No code or
+Dockerfile changes needed. `local_transformers`/`ollama` remain available
+too, useful for local dev on a machine with real RAM.
 
 ## 5. Knowledge base
 

@@ -1,0 +1,17 @@
+# Extras for MODEL_PROVIDER=llama_cpp (quantized GGUF instruct model).
+#
+# Deliberately NOT torch-based: llama-cpp-python is a pure C++ inference
+# engine with Python bindings, so a 4-bit-quantized 0.5B model needs only
+# ~400-450MB RSS at runtime — versus ~2GB+ for the same model loaded fp32
+# through requirements-full.txt's transformers/torch stack. This is what
+# makes running an actual LLM (not just the deterministic `template`
+# composer) feasible on Render Free's 512MB.
+#
+# llama-cpp-python does not publish wheels to PyPI (source dist only) —
+# install from the maintainer's own prebuilt-wheel index for a fast,
+# compiler-free install:
+#   pip install -r requirements.txt -r requirements-llm.txt \
+#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+-r requirements.txt
+llama-cpp-python==0.3.34
+huggingface_hub==0.36.2

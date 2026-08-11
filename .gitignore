@@ -19,6 +19,11 @@ backend/knowledge_base/raw/
 backend/knowledge_base/processed/
 backend/knowledge_base/embeddings/
 
+# GGUF model files for MODEL_PROVIDER=llama_cpp: large binaries, fetched via
+# huggingface_hub (see model_registry.py LlamaCppProvider) rather than
+# committed — same treatment as knowledge_base/raw/.
+backend/models/
+
 # --- Node / frontend ---
 frontend/node_modules/
 frontend/dist/
