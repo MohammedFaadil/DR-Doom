@@ -90,7 +90,7 @@ services:
       - key: LOG_LEVEL
         value: INFO
       - key: CORS_ORIGINS
-        value: https://drdoom-frontend-ghpl.onrender.com
+        value: https://drdoom.onrender.com
       - key: RATE_LIMIT_CHAT
         value: 30/minute
       - key: RATE_LIMIT_AUTH
@@ -99,7 +99,7 @@ services:
         value: 15/minute
 
   - type: web
-    name: drdoom-frontend
+    name: drdoom
     env: static
     rootDir: frontend
     buildCommand: npm install && npm run build
