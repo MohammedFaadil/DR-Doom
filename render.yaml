@@ -90,7 +90,7 @@ services:
       - key: LOG_LEVEL
         value: INFO
       - key: CORS_ORIGINS
-        value: https://drdoom-frontend.onrender.com
+        value: https://drdoom-frontend-ghpl.onrender.com
       - key: RATE_LIMIT_CHAT
         value: 30/minute
       - key: RATE_LIMIT_AUTH
