@@ -98,10 +98,8 @@ services:
       - key: RATE_LIMIT_VOICE
         value: 15/minute
 
-  - type: web
+  - type: static
     name: drdoom-frontend
-    env: static
-    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
