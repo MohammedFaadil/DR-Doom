@@ -67,16 +67,20 @@ export function Chat() {
         setIsEmergency(detail.is_emergency);
         setRiskLevel(detail.risk_level);
         setPatientState(detail.patient_state as ChatResponse["patient_state"]);
+        const loaded = detail.messages.map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          messageType: m.message_type,
+          question: m.message_type === "question" ? m.payload?.question || null : null,
+        }));
+        const lastIndex = loaded.length - 1;
         setMessages(
-          detail.messages.map((m) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            messageType: m.message_type,
+          loaded.map((m, i) => ({
+            ...m,
             // Only the most recent question is still answerable; older ones
             // are marked answered so their option buttons render disabled.
-            question: m.message_type === "question" ? m.payload?.question || null : null,
-            answered: true,
+            answered: m.question ? i !== lastIndex : true,
           }))
         );
         setLoadingHistory(false);
