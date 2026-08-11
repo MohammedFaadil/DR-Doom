@@ -52,7 +52,13 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
-    await api.post("/api/auth/logout");
+    try {
+      await api.post("/api/auth/logout");
+    } catch {
+      // Session may already be invalid server-side (expired cookie, etc.)
+      // — clear local state regardless so the UI never gets stuck showing
+      // a "logged in" screen the server no longer agrees with.
+    }
     set({ user: null });
   },
 

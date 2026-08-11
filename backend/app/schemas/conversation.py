@@ -65,6 +65,7 @@ class ChatResponse(BaseModel):
     model_provider: str = "template"
     summary: dict | None = None
     patient_state: dict = {}
+    grounding_confidence: float = 0.0
 
 
 class FeedbackRequest(BaseModel):

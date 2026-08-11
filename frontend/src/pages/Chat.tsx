@@ -1,17 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { PanelRightClose, PanelRightOpen, Stethoscope, Sparkles } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Stethoscope, Sparkles, Zap } from "lucide-react";
 import { MessageBubble, DisplayMessage } from "@/components/chat/MessageBubble";
 import { Composer } from "@/components/chat/Composer";
 import { AssessmentPanel } from "@/components/chat/AssessmentPanel";
 import { EmergencyBanner } from "@/components/chat/EmergencyBanner";
 import { SummaryActions } from "@/components/chat/SummaryActions";
-import { LoadingDots } from "@/components/common/LoadingDots";
 import { chatApi, conversationsApi } from "@/services/conversations";
 import type { ChatResponse, Citation, Question } from "@/types/api";
 
 function uid() {
   return Math.random().toString(36).slice(2);
+}
+
+// Purely informational — lets the patient see what's actually generating
+// their answer (a real hosted LLM vs. the deterministic template
+// fallback), not a claim about the answer's safety: every provider's
+// output passes through the same GroundingValidator either way.
+const PROVIDER_LABELS: Record<string, string> = {
+  groq: "Groq · Llama 3.3 70B",
+  llama_cpp: "Local model",
+  local_transformers: "Local model",
+  ollama: "Ollama",
+};
+
+function ProviderBadge({ provider }: { provider?: string }) {
+  if (!provider || provider === "template" || provider === "template_fallback") return null;
+  const label = PROVIDER_LABELS[provider] || provider;
+  return (
+    <span className="hidden items-center gap-1 rounded-full border border-brand-200 bg-brand-50 px-2 py-0.5 text-[10px] font-medium text-brand-700 dark:border-brand-800 dark:bg-brand-950/40 dark:text-brand-300 sm:inline-flex">
+      <Zap className="h-2.5 w-2.5" />
+      {label}
+    </span>
+  );
 }
 
 const STARTER_PROMPTS = [
@@ -38,6 +59,8 @@ export function Chat() {
   const [riskLevel, setRiskLevel] = useState("unknown");
   const [patientState, setPatientState] = useState<ChatResponse["patient_state"]>({});
   const [evidence, setEvidence] = useState<Citation[]>([]);
+  const [groundingConfidence, setGroundingConfidence] = useState<number | undefined>(undefined);
+  const [activeProvider, setActiveProvider] = useState<string | undefined>(undefined);
   const [summary, setSummary] = useState<ChatResponse["summary"]>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(!!routeId);
@@ -97,8 +120,12 @@ export function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
-  const applyResult = useCallback(
-    (result: ChatResponse) => {
+  // Finalizes the placeholder streaming bubble in place (by id) with the
+  // full validated ChatResponse, rather than appending a new message —
+  // this is what makes tokens "become" the final answer instead of a
+  // second message popping in after the streamed one.
+  const finalizeStreamingMessage = useCallback(
+    (streamingId: string, result: ChatResponse) => {
       setConversationId(result.conversation_id);
       conversationIdRef.current = result.conversation_id;
       setIsEmergency(result.is_emergency);
@@ -112,47 +139,66 @@ export function Chat() {
           return [...prev, ...result.evidence.filter((e) => !seen.has(e.url))];
         });
       }
+      if (result.grounding_confidence > 0) setGroundingConfidence(result.grounding_confidence);
+      setActiveProvider(result.model_provider);
 
-      setMessages((prev) => [
-        // A question that has just been answered can't be answered again.
-        ...prev.map((m) => (m.question ? { ...m, answered: true } : m)),
-        {
-          id: uid(),
-          role: "assistant",
-          content: result.message,
-          messageType: result.response_type,
-          question: result.question,
-          evidence: result.evidence,
-          isEmergency: result.is_emergency,
-        },
-      ]);
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id === streamingId) {
+            return {
+              ...m,
+              content: result.message,
+              messageType: result.response_type,
+              question: result.question,
+              evidence: result.evidence,
+              isEmergency: result.is_emergency,
+              groundingConfidence: result.grounding_confidence,
+              streaming: false,
+            };
+          }
+          // A question that has just been answered can't be answered again.
+          return m.question ? { ...m, answered: true } : m;
+        })
+      );
 
       if (!routeId) navigate(`/app/chat/${result.conversation_id}`, { replace: true });
     },
     [navigate, routeId]
   );
 
-  const sendMessage = useCallback(
-    async (text: string) => {
-      setMessages((prev) => [...prev, { id: uid(), role: "user", content: text }]);
+  const streamTurn = useCallback(
+    async (payload: { message: string; answer_question_id?: string; answer_value?: string | number | string[] }) => {
+      const streamingId = uid();
+      setMessages((prev) => [...prev, { id: streamingId, role: "assistant", content: "", streaming: true }]);
       setSending(true);
       try {
-        const result = await chatApi.send({ conversation_id: conversationIdRef.current, message: text });
-        applyResult(result);
-      } catch {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: uid(),
-            role: "assistant",
-            content: "Dr Doom is having trouble processing that right now. Please try again in a moment.",
+        await chatApi.sendStream({ conversation_id: conversationIdRef.current, ...payload }, {
+          onToken: (text) => {
+            setMessages((prev) => prev.map((m) => (m.id === streamingId ? { ...m, content: m.content + text } : m)));
           },
-        ]);
+          onFinal: (result) => finalizeStreamingMessage(streamingId, result),
+        });
+      } catch {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === streamingId
+              ? { ...m, content: "Dr Doom is having trouble processing that right now. Please try again in a moment.", streaming: false }
+              : m
+          )
+        );
       } finally {
         setSending(false);
       }
     },
-    [applyResult]
+    [finalizeStreamingMessage]
+  );
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      setMessages((prev) => [...prev, { id: uid(), role: "user", content: text }]);
+      await streamTurn({ message: text });
+    },
+    [streamTurn]
   );
 
   // Dashboard "try asking" links arrive as /app/chat?q=... — send once, then
@@ -171,27 +217,7 @@ export function Chat() {
       ...prev.map((m) => (m.question?.id === question.id ? { ...m, answered: true } : m)),
       { id: uid(), role: "user", content: args.label },
     ]);
-    setSending(true);
-    try {
-      const result = await chatApi.send({
-        conversation_id: conversationIdRef.current,
-        message: args.label,
-        answer_question_id: question.id,
-        answer_value: args.value,
-      });
-      applyResult(result);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: uid(),
-          role: "assistant",
-          content: "Dr Doom is having trouble processing that right now. Please try again.",
-        },
-      ]);
-    } finally {
-      setSending(false);
-    }
+    await streamTurn({ message: args.label, answer_question_id: question.id, answer_value: args.value });
   }
 
   function startNew() {
@@ -203,6 +229,7 @@ export function Chat() {
     setRiskLevel("unknown");
     setPatientState({});
     setEvidence([]);
+    setGroundingConfidence(undefined);
     setSummary(null);
   }
 
@@ -238,6 +265,7 @@ export function Chat() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <ProviderBadge provider={activeProvider} />
             <button
               type="button"
               onClick={startNew}
@@ -256,7 +284,7 @@ export function Chat() {
           </div>
         </div>
 
-        <div className="flex-1 space-y-5 overflow-y-auto scrollbar-thin px-5 py-6 pb-28 md:pb-6">
+        <div className="flex-1 space-y-5 overflow-y-auto scrollbar-thin bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(11,191,166,0.06),transparent)] px-5 py-6 pb-28 dark:bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(11,191,166,0.10),transparent)] md:pb-6">
           {messages.map((m) => (
             <MessageBubble
               key={m.id}
@@ -287,19 +315,13 @@ export function Chat() {
             </div>
           )}
 
-          {sending && (
-            <div className="flex items-center gap-3 pl-11">
-              <LoadingDots label="Retrieving evidence and assessing…" />
-            </div>
-          )}
-
           {isComplete && conversationId && (
-            <SummaryActions conversationId={conversationId} summaryId={summary?.id} onNewConsultation={startNew} />
+            <SummaryActions conversationId={conversationId} summary={summary} onNewConsultation={startNew} />
           )}
           <div ref={bottomRef} />
         </div>
 
-        <div className="border-t border-ink-200/70 dark:border-ink-800 bg-white/80 px-5 py-4 backdrop-blur dark:bg-ink-900/80">
+        <div className="mb-16 border-t border-ink-200/70 dark:border-ink-800 bg-white/80 px-5 py-4 backdrop-blur dark:bg-ink-900/80 md:mb-0">
           <Composer onSend={sendMessage} disabled={sending} />
           <p className="mt-2 text-center text-[10px] text-ink-400">
             Dr Doom provides educational information, not a diagnosis. In an emergency, call your local emergency number.
@@ -308,8 +330,13 @@ export function Chat() {
       </div>
 
       {panelOpen && (
-        <aside className="hidden w-80 shrink-0 border-l border-ink-200/70 bg-white dark:border-ink-800 dark:bg-ink-900 md:block">
-          <AssessmentPanel patientState={patientState} riskLevel={riskLevel} evidence={evidence} />
+        <aside className="hidden w-96 shrink-0 border-l border-ink-200/70 bg-white dark:border-ink-800 dark:bg-ink-900 md:block">
+          <AssessmentPanel
+            patientState={patientState}
+            riskLevel={riskLevel}
+            evidence={evidence}
+            groundingConfidence={groundingConfidence}
+          />
         </aside>
       )}
     </div>

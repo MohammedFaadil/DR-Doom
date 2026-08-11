@@ -69,9 +69,20 @@ def _persist_citations(db: Session, message: Message, evidence: list[RetrievedCh
     return citation_dicts
 
 
+def _recent_history(convo: Conversation) -> list[dict]:
+    """Snapshot of prior turns as {"role", "content"} dicts for the LLM's
+    chat history — must be read BEFORE this turn's new user Message is
+    added to the session below, or it would duplicate the current turn.
+    Windowed to the most recent CONVERSATION_HISTORY_TURNS turns (each
+    turn = 1 user + 1 assistant message) to bound prompt size."""
+    window = settings.CONVERSATION_HISTORY_TURNS * 2
+    return [{"role": m.role, "content": m.content} for m in convo.messages[-window:] if m.role in ("user", "assistant")]
+
+
 def _run_turn(db: Session, user: User, payload: ChatRequest) -> tuple[Conversation, ChatResponse]:
     convo = _get_or_create_conversation(db, user, payload.conversation_id)
     is_first_turn = len(convo.messages) == 0
+    history = _recent_history(convo)
 
     db.add(Message(conversation_id=convo.id, role="user", content=payload.message))
 
@@ -82,6 +93,7 @@ def _run_turn(db: Session, user: User, payload: ChatRequest) -> tuple[Conversati
         answer_question=question_obj,
         answer_value=payload.answer_value,
         is_first_turn=is_first_turn,
+        history=history,
     )
 
     convo.patient_state = result.state
@@ -147,6 +159,7 @@ def _run_turn(db: Session, user: User, payload: ChatRequest) -> tuple[Conversati
         model_provider=result.model_provider,
         summary=result.summary,
         patient_state=result.state,
+        grounding_confidence=result.grounding_confidence,
     )
     return convo, response
 
@@ -158,19 +171,49 @@ def chat(request: Request, payload: ChatRequest, user: User = Depends(get_curren
     return response
 
 
+_STREAM_CHUNK_WORDS = 3
+_STREAM_CHUNK_DELAY_SECONDS = 0.02
+
+
+def _chunk_for_streaming(text: str) -> list[str]:
+    """Split already-finalized text into small word-groups for a
+    progressive "typing" reveal in the UI.
+
+    This is NOT raw model token streaming. GroundingValidator has to see
+    the model's *complete* output to check every sentence against the
+    retrieved evidence and strip anything unsupported (see
+    app/safety/grounding_validator.py) — streaming raw tokens straight
+    from the model to the browser would mean showing text before it's
+    been safety-checked, which defeats the entire "will not hallucinate"
+    guarantee this app is built around. So the full pipeline (retrieval ->
+    generation -> grounding validation) runs first, exactly as it does for
+    the non-streaming endpoint, and only the resulting *validated* text is
+    revealed progressively — same safety guarantee, still a live,
+    responsive feel instead of one blocking wait.
+    """
+    words = text.split(" ")
+    return [" ".join(words[i : i + _STREAM_CHUNK_WORDS]) for i in range(0, len(words), _STREAM_CHUNK_WORDS)]
+
+
 @router.post("/stream")
 @limiter.limit(settings.RATE_LIMIT_CHAT)
 def chat_stream(
     request: Request, payload: ChatRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    """§46: SSE streaming so the UI can show progressive status while the
-    (CPU-only) retrieval + grounding pipeline runs, then the final answer."""
+    """SSE streaming: status updates while the pipeline runs, then the
+    fully validated answer revealed progressively (see
+    `_chunk_for_streaming` for why this isn't raw model-token streaming)."""
+    import time
 
     def event_stream():
         yield _sse("status", {"stage": "retrieving", "message": "Retrieving evidence..."})
         _, response = _run_turn(db, user, payload)
-        yield _sse("status", {"stage": "assessing", "message": "Assessing..."})
         yield _sse("status", {"stage": "preparing", "message": "Preparing response..."})
+
+        for chunk in _chunk_for_streaming(response.message):
+            yield _sse("token", {"text": chunk + " "})
+            time.sleep(_STREAM_CHUNK_DELAY_SECONDS)
+
         yield _sse("final", response.model_dump())
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

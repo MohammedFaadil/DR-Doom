@@ -4,8 +4,11 @@
 
 An AI-assisted clinical *information and triage* companion — structured
 symptom intake, hybrid RAG over a real curated medical knowledge base,
-deterministic emergency detection, grounded/cited answers, and a premium
-React chat UI with voice I/O. No commercial LLM API key required.
+deterministic emergency detection, grounded/cited answers, real-time
+streaming responses with full conversation memory, and a premium React
+chat UI with voice I/O. Powered by **Groq** (Llama 3.3 70B) for genuinely
+intelligent, context-aware answers — with a zero-dependency deterministic
+fallback so the app never breaks if that's unavailable.
 
 > Dr Doom provides AI-generated health information and educational guidance
 > based on its available medical knowledge sources. It is not a substitute
@@ -57,10 +60,14 @@ What it does:
 - Retrieves real evidence (hybrid semantic + keyword search) from a
   knowledge base built live from **MedlinePlus (U.S. National Library of
   Medicine / NIH)** — never hand-written or scraped-blog content.
-- Composes an answer strictly from that evidence, then re-validates every
-  sentence against the retrieved chunks (grounding validator) before
-  showing it, stripping anything unsupported.
-- Shows real, clickable citations for every factual claim.
+- Composes an answer directly from that evidence **and the conversation so
+  far** (so a follow-up like "is it OK to take ibuprofen for it?" correctly
+  reasons about the headache you mentioned three turns ago), then
+  re-validates every sentence against the retrieved chunks (grounding
+  validator) before showing it, stripping anything unsupported.
+- Streams the validated answer to the UI progressively (real-time feel),
+  and shows a live grounding-confidence indicator plus real, clickable
+  citations for every factual claim.
 - Persists conversations, generates a structured consultation summary, and
   exports it as a PDF.
 - Supports voice input/output natively in the browser.
@@ -69,18 +76,18 @@ What it does:
 
 ```
 USER QUERY
-  -> Conversation Context (patient_state, persisted per conversation)
+  -> Conversation Context (patient_state + recent message history, persisted per conversation)
   -> Intake Agent            (symptom/entity extraction, intent detection)
   -> EmergencyRiskEngine     (deterministic red-flag rules — ALWAYS first)
   -> Question Agent          (adaptive next-question selection, or "done")
   -> Retrieval Agent         (query rewriting + hybrid search)
   -> Hybrid Retriever        (FAISS semantic + BM25 keyword, reranked)
-  -> Clinical Explanation Agent (composes response from evidence + state)
-  -> ModelManager            (template / local_transformers / ollama)
-  -> GroundingValidator      (strips any unsupported sentence)
-  -> Medication Safety Agent (medication questions only; KB-only answers)
+  -> Clinical Explanation Agent (evidence + history -> grounded-RAG prompt)
+  -> ModelManager            (groq / template / llama_cpp / local_transformers / ollama)
+  -> GroundingValidator      (strips any unsupported sentence, catches dropped sections)
+  -> Medication Safety Agent (medication questions only; KB-only answers, never LLM-touched)
   -> Summary Agent           (consultation summary, on completion)
-  -> Response Formatter (FastAPI) -> React UI
+  -> SSE Stream (FastAPI) -> React UI (progressive reveal + confidence UI)
 ```
 
 Each stage above is a separate, independently-testable Python module under
@@ -95,58 +102,128 @@ COMPLETE`, with an `ANY_STATE → EMERGENCY` branch).
 An LLM asked "what could cause X" will confidently produce plausible-sounding
 but sometimes wrong medical claims, fake citations, or fabricated drug
 information — unacceptable for health content (§90 "no hallucination rule").
-Instead:
+So even though the production default (`MODEL_PROVIDER=groq`) is a real,
+capable 70B model, it is never given free rein to just answer from its own
+training knowledge:
 
 - All factual claims must trace back to a **retrieved** MedlinePlus chunk.
-- The **default** response composer (`MODEL_PROVIDER=template`) doesn't call
-  a generative model at all — it deterministically assembles the response
-  from the retrieved text itself, so there is structurally no way for it to
-  invent a fact.
-- If a heavier `local_transformers`/`ollama` provider is enabled to
-  paraphrase the composed text more conversationally, the
-  **GroundingValidator** re-checks every sentence of its output against the
-  retrieved evidence by embedding similarity *and* a deterministic
-  named-entity/year check, stripping anything that doesn't match — so even
-  a hallucination-prone provider can't get a fabricated name, date, or claim
-  through.
+  Groq is handed that retrieved evidence *as the only source of medical
+  facts* in its system prompt, explicitly instructed to say "I don't have
+  enough evidence" rather than fill a gap from general knowledge, and told
+  never to name a specific serious condition (stroke, cancer, etc.) unless
+  it's literally present in the evidence — see
+  `app/agents/explanation.py::_GROQ_SYSTEM_PROMPT_TEMPLATE`.
+- **GroundingValidator** re-checks every sentence of the model's output
+  afterward regardless — by embedding similarity against the retrieved
+  chunks, a deterministic named-entity/year check, *and* a check for
+  specific high-stakes clinical terms (stroke, tumor, heart attack, ...)
+  that must already be present in the evidence to survive. This is defense
+  in depth: the strict prompt lowers how often a claim needs to be caught,
+  the validator is what actually guarantees it never reaches the user
+  unchecked.
+- If the model's answer drops whole sections or shrinks drastically
+  relative to what the deterministic composer would have produced (a real,
+  observed small-model failure mode — see §4), the app discards it and
+  falls back to the deterministic version rather than showing an
+  incomplete answer.
+- The **fallback** response composer (`MODEL_PROVIDER=template`, and what
+  `groq` itself falls back to on any failure) doesn't call a generative
+  model at all — it deterministically assembles the response from the
+  retrieved text itself, so there is structurally no way for it to invent
+  a fact. This is what keeps the app fully functional even with no API key
+  configured at all.
 - If retrieval doesn't find anything relevant, the app says so explicitly
   ("I don't have enough evidence in my verified medical knowledge base to
   answer that safely") instead of answering from general model knowledge.
 
 ## 4. Model architecture
 
-`backend/app/core/model_registry.py` defines a small provider interface
-(`GenerationProvider.rephrase(composed_text) -> text`) with four
-implementations, selected via `MODEL_PROVIDER`:
+`backend/app/core/model_registry.py` defines a provider interface with
+five implementations, selected via `MODEL_PROVIDER`:
 
 | Provider | What it does | RAM (measured) | Default |
 |---|---|---|---|
-| `template` | Deterministic pass-through — the actual "model" is the structured template composer in `app/agents/explanation.py`. Zero extra RAM. | ~0 | ✅ yes |
-| `llama_cpp` | Quantized GGUF model (`SmolLM2-360M-Instruct`) via `llama-cpp-python` — pure C++ inference, no torch. | ~350-450MB extra | no |
-| `local_transformers` | Loads a small local HF instruct model (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) via `transformers`/torch to paraphrase the composed text. Lazy-loaded on first use. | ~2GB+ extra | no |
-| `ollama` | Calls a locally-running Ollama server over HTTP. | depends on your Ollama setup | no |
+| `groq` | Groq-hosted **Llama 3.3 70B Versatile** via their OpenAI-compatible Chat Completions API (LPU inference — fast even at 70B). Composes the answer directly from retrieved evidence + conversation history, not just a rephrase. Needs `GROQ_API_KEY`. | 0 (runs on Groq's infra) | ✅ yes |
+| `template` | Deterministic pass-through — the actual "model" is the structured template composer in `app/agents/explanation.py`. Zero extra RAM. The automatic fallback if Groq is unavailable. | ~0 | fallback |
+| `llama_cpp` | Quantized GGUF model (`SmolLM2-360M-Instruct`) via `llama-cpp-python` — pure C++ inference, no torch. For **local testing without an API key**. | ~350-450MB extra | opt-in |
+| `local_transformers` | Loads a small local HF instruct model (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) via `transformers`/torch. Heavier, for local dev on a machine with real RAM. | ~2GB+ extra | opt-in |
+| `ollama` | Calls a locally-running Ollama server over HTTP. | depends on your Ollama setup | opt-in |
 
 `ModelManager` (`app/core/model_manager.py`) wraps whichever provider is
 configured and **always falls back to `template`** if the configured
-provider fails to load, errors at call time, or — for `llama_cpp` /
-`local_transformers` specifically — produces a rephrase that drops whole
-sections or most of its content relative to the original (§47, and see
-`app/agents/explanation.py::_rephrase_or_fallback`) — the app never
-crashes, hangs, or silently returns an incomplete answer just because a
-small model under-delivered.
+provider is unavailable (e.g. no API key), fails, errors at call time, or
+produces an answer that drops whole sections or shrinks drastically
+relative to the deterministic version (§47, and see
+`app/agents/explanation.py::_generate_grounded` /
+`_rephrase_or_fallback`) — the app never crashes, hangs, or silently
+returns an incomplete answer just because the model under-delivered.
 
-**Why `template` is the default:** measured directly while building the
-`llama_cpp` provider — this app's existing RAG stack (embeddings + FAISS +
-FastAPI + DB pool) already uses ~226MB RSS at rest, and Render Free's
-budget is 512MB total. Two things were tested, not assumed:
+### Why Groq, and how it actually reasons over evidence + history
+
+Most "add an LLM" implementations just ask a model to paraphrase
+already-composed text. Groq mode goes further:
+`explanation.py::_generate_grounded` hands the model the **raw retrieved
+evidence chunks** (not a pre-filtered template) plus the **recent
+conversation history** as real chat turns, inside a strict system prompt
+(`_GROQ_SYSTEM_PROMPT_TEMPLATE`) that says: answer only from this evidence,
+never invent a specific serious condition unless it's literally present,
+use history for context/consistency only — never as a source of new
+medical facts. This is what makes a follow-up question like *"is it OK to
+take ibuprofen for this?"* correctly connect back to the headache
+discussed three turns earlier and the pregnancy status mentioned during
+intake, rather than being answered in a vacuum. `GroundingValidator` still
+re-checks the output afterward exactly like every other provider (§3) —
+capability lowers how often the safety net has to catch something, it
+doesn't replace it.
+
+Conversation history is windowed to the most recent
+`CONVERSATION_HISTORY_TURNS` turns (default 8) by `app/api/chat.py`, so
+prompt size/cost/latency stays bounded regardless of how long a
+conversation gets — Groq's actual context window (128K tokens) is far
+larger than this app ever needs.
+
+### Why `template` is the safety-net default, not `groq` blindly
+
+The app is deliberately built so that **no API key at all still works,
+fully, forever** — `MODEL_PROVIDER` defaults to `template` in
+`app/config.py`, and every deploy path (`render.yaml`, `.env.example`)
+requires an explicit, conscious choice to turn Groq on. If `GROQ_API_KEY`
+is empty, `GroqProvider.is_available()` returns `False` and `ModelManager`
+transparently uses `template` instead — same deterministic,
+evidence-composed answers as always, just without the natural-language
+polish and cross-turn reasoning Groq adds.
+
+### Local testing without an API key: one-line model swap
+
+Don't have a Groq key handy, or want to test fully offline? Change one
+value in `backend/.env`:
+
+```bash
+# .env
+MODEL_PROVIDER=llama_cpp   # was: groq
+```
+
+That's it — no code changes. `llama_cpp` uses a quantized
+`SmolLM2-360M-Instruct` GGUF model via `llama-cpp-python` (pure C++, no
+torch); it's not baked into the production Docker image (Groq needs no
+local model at all, so the image stays lean), so locally you'll need:
+
+```bash
+cd backend
+pip install -r requirements-llm.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+
+The GGUF file (~260MB) downloads once via `huggingface_hub` on first use
+and is cached under `backend/models/` (gitignored). Two things worth
+knowing if you go this route, both measured directly while building it:
 
 1. **Vocabulary size dominates a GGUF model's actual RAM cost**, more than
-   the model's parameter count or quantization level. `llama.cpp`
-   allocates an internal buffer roughly sized `n_ctx * vocab_size`; Qwen's
-   ~152K-token vocabulary made that buffer alone cost ~620MB extra RSS —
-   over the *entire* Render Free budget by itself, regardless of
-   quantization. SmolLM2's ~49K-token vocabulary avoids that specific
-   blowup, which is why it's the `llama_cpp` default instead of Qwen.
+   parameter count or quantization level. `llama.cpp` allocates an
+   internal buffer roughly sized `n_ctx * vocab_size`; a model like
+   Qwen2.5-0.5B-Instruct with a ~152K-token vocabulary made that buffer
+   alone cost ~620MB extra RSS — over Render Free's *entire* 512MB budget
+   by itself, regardless of quantization. SmolLM2's ~49K-token vocabulary
+   avoids that blowup, which is why it's the default here instead.
 2. **Going smaller than ~360M params isn't a free RAM win.** A
    135M-parameter model uses meaningfully less RAM (~170MB vs ~350-450MB)
    but fabricated clinical claims not present in the source text in
@@ -156,20 +233,19 @@ budget is 512MB total. Two things were tested, not assumed:
 
 Even at 360M params, on this app's longer multi-section assessment output,
 the model sometimes stops after the first section instead of completing
-the rewrite — a real capacity limit, not a bug. `_rephrase_or_fallback`
-catches this (comparing section-heading counts and content length between
-the rephrase and the original) and safely reverts to the deterministic
+the rewrite — a real capacity limit, not a bug. The same
+"did it drop sections / shrink drastically" fallback check protects this
+path too, so an under-delivering local model reverts to the deterministic
 template text rather than showing an incomplete answer.
 
-Net: `llama_cpp` needs ~350-450MB on top of the app's ~226MB baseline —
-600-670MB total, over Render Free's 512MB. It's a genuinely good fit for
-Render's paid **Starter** plan (2GB) or any host with real headroom, and
-enabling it there is a **one-line env var change** (`MODEL_PROVIDER=llama_cpp`
-in the Render dashboard, then redeploy) — the dependencies are already
-installed in the Docker image (`requirements-llm.txt`, no torch), and the
-GGUF model downloads once via `huggingface_hub` on first use. No code or
-Dockerfile changes needed. `local_transformers`/`ollama` remain available
-too, useful for local dev on a machine with real RAM.
+Want the biggest local model that still fits comfortably? Any GGUF-format
+instruct model works — just point `LLAMACPP_REPO_ID` /
+`LLAMACPP_FILENAME` at a different Hugging Face repo/file (small-vocab
+models like the SmolLM2/Qwen2.5 families scale most predictably; see the
+vocabulary note above before reaching for a big-vocab model). Prefer
+`transformers`/torch instead? `MODEL_PROVIDER=local_transformers` +
+`pip install -r requirements-full.txt` works the same way. `ollama` is
+also available if you have a local Ollama server running.
 
 ## 5. Knowledge base
 
@@ -199,11 +275,11 @@ FAISS `IndexFlatIP` (cosine similarity) + a `rank_bm25` keyword index →
 persist to `backend/knowledge_base/index/`.
 
 Retrieval (`app/rag/hybrid.py`) combines both scores
-(`0.70·semantic + 0.30·keyword`, configurable) with metadata filtering, then
-reranks with a deterministic authority/heading-match booster
-(`app/rag/rerank.py`) — every source in this build is MedlinePlus/NIH, so
-the authority weighting is mostly future-proofing for adding more sources
-later.
+(`0.65·semantic + 0.35·keyword` by default, configurable, retrieving the
+top 8 candidates before reranking) with metadata filtering, then reranks
+with a deterministic authority/heading-match booster (`app/rag/rerank.py`)
+— every source in this build is MedlinePlus/NIH, so the authority
+weighting is mostly future-proofing for adding more sources later.
 
 ## 6. Safety architecture
 
@@ -214,18 +290,27 @@ later.
   torsion, pediatric infant fever, febrile seizure. Runs on **every** turn,
   **before** intake/retrieval/generation — deterministic, not model-judged.
 - **`GroundingValidator`** (`app/safety/grounding_validator.py`) — sentence-
-  level claim checking against retrieved evidence (embedding similarity +
-  a proper-noun/year entailment check), strips unsupported sentences.
+  level claim checking against retrieved evidence: embedding similarity,
+  a proper-noun/year entailment check, *and* a check for high-stakes
+  clinical terms (stroke, tumor, heart attack, sepsis, ...) that must
+  already be present in the evidence to survive — added specifically after
+  observing a model reach for a scary-but-plausible serious condition that
+  was never in the retrieved evidence (topically close enough to pass
+  similarity alone). Strips any sentence that fails.
 - **`MedicationSafetyEngine`** (`app/safety/medication_safety.py`) — answers
   only from ingested drug chunks; flags allergy conflicts, pregnancy,
   pediatric, and elderly considerations from the patient's profile; refuses
-  outright for any drug not in the knowledge base.
+  outright for any drug not in the knowledge base. Deliberately never
+  LLM-touched, on any provider — see `app/agents/medication.py`.
 - **Prompt/document injection defense** — retrieved chunks and user text are
-  always treated as *data*, never as instructions. The default `template`
-  provider never sends retrieved text to a model as an instruction-following
-  prompt at all (it just string-formats it); the `local_transformers`
-  provider's prompt is a fixed rewrite-only instruction, and grounding
-  validation runs on its output regardless.
+  always treated as *data*, never as instructions. `template` mode never
+  sends retrieved text to a model as an instruction-following prompt at all
+  (it just string-formats it). Groq's system prompt is fixed and
+  server-controlled — user text and evidence only ever appear inside clearly
+  demarcated message content, never concatenated into the instructions
+  themselves — and grounding validation runs on its output regardless,
+  which is what actually stops an injected instruction from having any
+  effect even if the model were tricked into following one.
 
 ## 7. Database
 
@@ -274,12 +359,34 @@ banner, live assessment panel, voice controls; `common/`: buttons, cards,
 risk badges), `pages/` (Landing, Login, Register, Dashboard, Chat, History,
 Profile, Settings, Admin), `layouts/` (`AppLayout` — sidebar on desktop,
 bottom nav on mobile), `stores/` (Zustand: auth, theme), `hooks/`
-(`useVoice`), `services/` (typed `fetch` wrappers per resource).
+(`useVoice`), `services/` (typed `fetch` wrappers per resource, including
+the SSE stream consumer).
 
 Design system: brand teal (`brand-*`) + neutral ink scale, light/dark via
 Tailwind's `class` strategy (`stores/themeStore.ts`), rounded cards,
 `prose-dr` markdown styling for assistant messages (`react-markdown` +
 `remark-gfm`), skeleton/loading-dots states, mobile-first with a bottom nav.
+
+### Real-time streaming & confidence UI
+
+- **Progressive answers:** `chatApi.sendStream` (`services/conversations.ts`)
+  consumes `POST /api/chat/stream`'s Server-Sent Events and reveals the
+  answer word-group by word-group with a blinking cursor
+  (`MessageBubble.tsx`), instead of one blocking wait. This is **not** raw
+  model-token streaming — see `app/api/chat.py::_chunk_for_streaming` for
+  why: `GroundingValidator` has to see the *complete* model output to
+  check it against evidence, so the full pipeline runs first and only the
+  already-validated answer is revealed progressively. Same safety
+  guarantee as the non-streaming endpoint, still a live, responsive feel.
+- **Grounding confidence UI:** every assistant message shows a small
+  "X% grounded" badge (how closely the answer's claims matched cited
+  sources), and the Assessment panel shows the same figure with an
+  explanation plus a per-citation relevance bar — the "won't hallucinate"
+  claim is visible in the UI, not just true under the hood.
+- **Provider badge:** the header shows which AI actually generated the
+  current answer (e.g. "Groq · Llama 3.3 70B"), hidden when running in
+  template/fallback mode — transparency about what's answering, not just
+  a decorative label.
 
 ## 10. Backend
 
@@ -305,6 +412,17 @@ uvicorn app.main:app --reload
 ```
 Backend runs at `http://127.0.0.1:8000` (or whatever `--port` you choose).
 
+**Want real Groq-powered answers locally?** Add to `backend/.env`:
+```bash
+MODEL_PROVIDER=groq
+GROQ_API_KEY=gsk_...          # free key from https://console.groq.com/keys
+```
+Leave `MODEL_PROVIDER` unset (or `template`) to run with zero external
+dependencies/API calls at all — every feature still works, just with
+deterministic evidence-composed answers instead of Groq's natural-language
+polish and cross-turn reasoning. See [§4](#4-model-architecture) for the
+local-LLM (`llama_cpp`) alternative if you want an offline model instead.
+
 **Frontend:**
 ```bash
 cd frontend
@@ -324,6 +442,16 @@ See [`.env.example`](.env.example) (backend) and
 [`.env.frontend.example`](.env.frontend.example) (frontend) — every
 variable is documented inline.
 
+**Secrets never go in a committed file.** `GROQ_API_KEY` and `SECRET_KEY`
+belong in `backend/.env` locally (gitignored — see `.gitignore`) or as a
+Render **secret** environment variable in production (`render.yaml` marks
+`GROQ_API_KEY` as `sync: false`, which makes Render prompt for it during
+Blueprint deploy rather than storing a real value in the file — see
+[§15](#15-render-deployment)). If you ever paste a real key into a chat
+log, commit, or issue by mistake, rotate it immediately at
+[console.groq.com/keys](https://console.groq.com/keys) — treat it as
+compromised the moment it's been typed somewhere outside `.env`.
+
 ## 13. Knowledge ingestion
 
 ```bash
@@ -342,7 +470,7 @@ version via `Conversation.knowledge_version`).
 
 ```bash
 cd backend
-pytest tests/ -q                    # 37 tests: emergency engine, grounding,
+pytest tests/ -q                    # 58 tests: emergency engine, grounding,
                                      # question engine, symptom lexicon,
                                      # auth API, chat API, medication safety,
                                      # retrieval (skipped if index not built)
@@ -365,16 +493,22 @@ or use [`render.yaml`](render.yaml) as a one-click Blueprint.
 - Embedding model + vector/keyword index are loaded once at startup
   (`app/rag/index_manager.py`, `lru_cache`) and reused for every request —
   never rebuilt or reloaded per-request.
-- `MODEL_PROVIDER=template` means zero LLM inference cost by default.
+- `MODEL_PROVIDER=groq` runs generation on Groq's LPU infrastructure —
+  zero local CPU/RAM cost regardless of Render plan, and fast even at 70B
+  parameters (typical assessment turn: ~2-4s including retrieval +
+  grounding validation, measured locally).
 - `GET /api/health` responds immediately without waiting on the full
   startup sequence; `GET /api/readiness` separately reports DB/index/model
   status so the app never silently answers with an unready knowledge base.
-- `POST /api/chat/stream` (SSE) streams status updates
-  ("Retrieving evidence…" → "Assessing…" → "Preparing response…" → final
-  answer) so the UI feels responsive even though inference is CPU-only.
-- Retrieval is capped at `RETRIEVAL_TOP_K` (default 6); conversation context
-  sent to any generative provider is the current patient_state + retrieved
-  evidence, never the full raw message history.
+- `POST /api/chat/stream` (SSE): the full retrieval → generation →
+  grounding-validation pipeline runs first (so nothing unvalidated ever
+  reaches the client — see §9), then the validated answer is revealed
+  progressively for a live, responsive feel instead of one blocking wait.
+- Retrieval is capped at `RETRIEVAL_TOP_K` (default 8). Conversation
+  history sent to Groq is windowed to the most recent
+  `CONVERSATION_HISTORY_TURNS` turns (default 8), not the full raw
+  message history, bounding prompt size/latency/cost as a conversation
+  grows.
 - The knowledge base index ships prebuilt in the Docker image — the
   container never downloads/builds it at boot.
 
@@ -386,11 +520,13 @@ Pydantic input validation on every endpoint, bcrypt password hashing,
 HTTP-only JWT session cookies with configurable `Secure`/`SameSite`,
 security response headers (`X-Frame-Options`, `X-Content-Type-Options`,
 `Content-Security-Policy`, `Referrer-Policy`), non-root Docker user,
-secrets via environment variables only (never committed), generic error
-responses (no stack traces leaked — see `app/main.py` exception handlers).
-`grep -ri "OPENAI_API_KEY\|ANTHROPIC_API_KEY\|GEMINI_API_KEY\|GROQ_API_KEY"`
-across the repo returns nothing — no commercial LLM API key is required or
-referenced anywhere in the default path.
+secrets via environment variables only — never committed to the repo (see
+[§12](#12-environment-variables) for how `GROQ_API_KEY` specifically is
+handled) — generic error responses (no stack traces leaked — see
+`app/main.py` exception handlers). The app is fully functional with **no**
+API key configured at all (`MODEL_PROVIDER` defaults to `template`,
+zero external calls); `groq` is an explicit opt-in, not a hidden
+requirement.
 
 ## 18. Privacy
 
@@ -407,11 +543,21 @@ Profile pages / `DELETE /api/auth/me`, `/api/profile`,
 
 Stated plainly rather than silently faked (§92, §99):
 
-- **No bundled large medical LLM.** `template` mode (deterministic,
-  evidence-composed) is the default and the only mode guaranteed to work on
-  Render Free. `local_transformers`/`ollama` are real, wired-up, working
-  providers behind the same interface — just not the default, because Free
-  tier RAM can't reliably host them.
+- **Groq is a third-party dependency.** The production default
+  (`MODEL_PROVIDER=groq`) calls an external API — if Groq has an outage or
+  the configured key is invalid, the app automatically falls back to
+  `template` (deterministic, evidence-composed, always works) rather than
+  erroring, but answers temporarily lose Groq's natural-language polish
+  and cross-turn reasoning until it recovers. There's no bundled model
+  running inside this app's own container as a backup — that's a
+  deliberate trade-off (§4): a locally-hosted model small enough to fit
+  typical free-tier RAM budgets was measured to be unreliable enough
+  (fabricating clinical claims) to not be a safe default either.
+- **`local_transformers`/`ollama`/`llama_cpp` are for local dev, not
+  production.** All three are real, wired-up, working providers behind the
+  same interface — genuinely useful for testing without an API key — but
+  none is the production default; see §4 for the RAM/quality trade-offs
+  measured for each.
 - **No server-side speech-to-text model.** Browser Web Speech API is the
   real default; a server endpoint interface exists for a future
   `faster-whisper` upgrade but is off by default.
@@ -440,5 +586,3 @@ professional. It does not claim 100% accuracy, does not claim to be a
 licensed physician, and does not issue prescriptions. If symptoms are
 severe, sudden, or concerning, seek appropriate medical care — in an
 emergency, call your local emergency number immediately.
-#   D R - D o o m  
- 

@@ -156,6 +156,103 @@ def _heading_count(text: str) -> int:
     return sum(1 for line in text.split("\n") if line.strip().startswith("## "))
 
 
+# Shared by both compose_factual_answer and compose_assessment: the
+# strict grounded-RAG contract handed to Groq (the only provider capable
+# of full generation — see model_registry.py). {evidence_block} is filled
+# in per call. GroundingValidator still re-checks the output afterward
+# regardless — this prompt lowers how often that safety net has to catch
+# something, it isn't trusted as the only line of defense.
+_GROQ_SYSTEM_PROMPT_TEMPLATE = (
+    "You are Dr Doom, an evidence-grounded health information assistant embedded in a "
+    "consultation app. You are NOT a doctor and must never claim to be one or issue a diagnosis.\n\n"
+    "You will be given RETRIEVED EVIDENCE below, and — as prior chat turns — the conversation "
+    "so far with this patient. Answer using ONLY the RETRIEVED EVIDENCE as your source of "
+    "medical facts. Use the conversation history only for context (what the patient already "
+    "told you, what's already been discussed) — never as a source of new medical claims.\n\n"
+    "STRICT RULES:\n"
+    "1. Every medical fact, cause, symptom, drug name, or recommendation in your answer must be "
+    "directly supported by the RETRIEVED EVIDENCE below. If the evidence doesn't cover something, "
+    "say so plainly rather than filling the gap from general knowledge.\n"
+    "2. Never name a specific serious condition (e.g. stroke, heart attack, cancer, tumor) unless "
+    "that exact condition is explicitly present in the RETRIEVED EVIDENCE.\n"
+    "3. Never give a diagnosis. Frame possible explanations as possibilities, and say plainly this "
+    "is not a confirmed diagnosis.\n"
+    "4. Reference the conversation history to stay consistent and specific to this patient — don't "
+    "ask them to repeat information they already gave you, and don't contradict an earlier turn.\n"
+    "5. Do not include a \"Sources\"/citations section yourself — the app appends real citations "
+    "automatically after your answer.\n"
+    "6. Write in clear, warm, plain language, not clinical jargon.\n"
+    "7. Output ONLY the answer itself — no meta-commentary about what you're doing, no preamble "
+    "like \"Here's my answer\", no closing summary of your own.\n"
+    "8. If the RETRIEVED EVIDENCE is empty or clearly insufficient to answer safely, respond with "
+    "exactly this sentence and nothing else: "
+    '"I don\'t have enough evidence in my verified medical knowledge base to answer that safely."\n\n'
+    "RETRIEVED EVIDENCE:\n{evidence_block}"
+)
+
+_MAX_HISTORY_MESSAGE_CHARS = 600
+
+
+def _format_evidence_block(chunks: list[RetrievedChunk]) -> str:
+    if not chunks:
+        return "(no evidence retrieved)"
+    parts = []
+    for i, c in enumerate(chunks, 1):
+        parts.append(
+            f"[{i}] {_clean_title(c.chunk.title)} ({c.chunk.organization}) — "
+            f"{category_label(c.chunk.section_category)}\n"
+            f"{_trim(c.chunk.text, max_sentences=6, max_chars=700)}"
+        )
+    return "\n\n".join(parts)
+
+
+def _recent_history(history: list[dict] | None) -> list[dict]:
+    """`history` is prior conversation turns as {"role": "user"|"assistant",
+    "content": str} dicts, oldest first — caller (app/api/chat.py) is
+    responsible for windowing to CONVERSATION_HISTORY_TURNS. Each message
+    is defensively length-capped here too, so one unusually long past
+    assessment can't blow up prompt size."""
+    if not history:
+        return []
+    out = []
+    for h in history:
+        role = h.get("role")
+        content = (h.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        out.append({"role": role, "content": content[:_MAX_HISTORY_MESSAGE_CHARS]})
+    return out
+
+
+def _generate_grounded(
+    task_instruction: str,
+    evidence_chunks: list[RetrievedChunk],
+    history: list[dict] | None,
+    fallback_composed: str,
+    top_for_grounding: list[RetrievedChunk],
+) -> tuple[str, GroundingResult, str]:
+    """Try full evidence+history-grounded generation (Groq) first; fall
+    back to the existing deterministic-compose-then-rephrase path for
+    every other provider, or if Groq is unavailable/fails/under-delivers.
+    See `_rephrase_or_fallback` for why "under-delivers" (dropped
+    sections, drastically shorter output) is checked the same way here as
+    it is there — a capable model can still stop early on a long
+    multi-section task, and that's not safe to show as-is.
+    """
+    manager = get_model_manager()
+    if manager.supports_full_generation():
+        system_prompt = _GROQ_SYSTEM_PROMPT_TEMPLATE.format(evidence_block=_format_evidence_block(evidence_chunks))
+        messages = _recent_history(history) + [{"role": "user", "content": task_instruction}]
+        raw = manager.generate_answer(system_prompt, messages)
+        if raw:
+            grounding = validate_grounding(raw, top_for_grounding)
+            lost_sections = _heading_count(grounding.grounded_text) < _heading_count(fallback_composed)
+            lost_most_content = len(grounding.grounded_text) < 0.5 * len(raw)
+            if grounding.grounded_text and not lost_sections and not lost_most_content:
+                return grounding.grounded_text, grounding, "groq"
+    return _rephrase_or_fallback(fallback_composed, top_for_grounding)
+
+
 def _rephrase_or_fallback(composed: str, top: list[RetrievedChunk]) -> tuple[str, GroundingResult, str]:
     """Rephrase via the active model provider, then validate grounding —
     but a small local model asked to rewrite a long multi-section note has
@@ -183,7 +280,9 @@ def _rephrase_or_fallback(composed: str, top: list[RetrievedChunk]) -> tuple[str
     return grounding.grounded_text, grounding, provider
 
 
-def compose_factual_answer(retrieval: RetrievalResult) -> ExplanationOutput:
+def compose_factual_answer(
+    retrieval: RetrievalResult, user_text: str = "", history: list[dict] | None = None
+) -> ExplanationOutput:
     top = [c for c in retrieval.chunks if c.rerank_score > 0]
     if not top or top[0].rerank_score < MIN_RETRIEVAL_SCORE_FOR_ANSWER:
         return ExplanationOutput(
@@ -203,16 +302,21 @@ def compose_factual_answer(retrieval: RetrievalResult) -> ExplanationOutput:
             break
 
     body = "\n\n".join(body_parts)
+    cited = unique_docs[: len(body_parts)]
 
-    final, grounding, provider = _rephrase_or_fallback(body, top)
+    task_instruction = (
+        f'The patient just asked: "{user_text}"\n\n'
+        "Answer it directly and completely using only the RETRIEVED EVIDENCE. Write 2-4 short "
+        "plain-language paragraphs (no markdown headings needed for a direct question like this)."
+    )
+    final, grounding, provider = _generate_grounded(task_instruction, cited, history, body, top)
     final = final or INSUFFICIENT_EVIDENCE_MESSAGE
 
-    cited = unique_docs[: len(body_parts)]
     message = f"{final}\n\n" + _sources_block(cited)
     return ExplanationOutput(message, cited, grounding, provider)
 
 
-def compose_assessment(state: dict, retrieval: RetrievalResult) -> ExplanationOutput:
+def compose_assessment(state: dict, retrieval: RetrievalResult, history: list[dict] | None = None) -> ExplanationOutput:
     top = [c for c in retrieval.chunks if c.rerank_score > 0]
     if not top or top[0].rerank_score < MIN_RETRIEVAL_SCORE_FOR_ANSWER:
         return ExplanationOutput(
@@ -259,11 +363,25 @@ def compose_assessment(state: dict, retrieval: RetrievalResult) -> ExplanationOu
         ),
     ]
     composed = "\n\n".join(sections)
-
-    final, grounding, provider = _rephrase_or_fallback(composed, top)
-    final = final or composed
-
     cited = explain_chunks + care_chunks + warning_chunks
+
+    task_instruction = (
+        f"{_render_understanding(state)}\n\n"
+        "Write a full patient-facing assessment using only the RETRIEVED EVIDENCE, with exactly "
+        "these four markdown headings in this order — do not add, remove, rename, or reorder them, "
+        "and do not add any other heading:\n"
+        "## What I understand\n"
+        "## What this may mean\n"
+        "## What you can do now\n"
+        "## When to seek medical care\n\n"
+        "\"What I understand\" should restate the patient's own reported symptoms/profile above — "
+        "not new evidence-derived content. \"What this may mean\" lists possible explanations from "
+        "the evidence, explicitly not a diagnosis. \"What you can do now\" and \"When to seek "
+        "medical care\" must come only from evidence about this same condition — if the evidence "
+        "doesn't cover self-care or warning signs for it, say so rather than guessing."
+    )
+    final, grounding, provider = _generate_grounded(task_instruction, cited, history, composed, top)
+    final = final or composed
     message = f"{final}\n\n" + _sources_block(cited)
     return ExplanationOutput(message, _dedupe_by_doc(cited), grounding, provider)
 

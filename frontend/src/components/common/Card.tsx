@@ -1,12 +1,15 @@
 import { HTMLAttributes } from "react";
 import clsx from "clsx";
+import { twMerge } from "tailwind-merge";
 
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={clsx(
-        "rounded-2xl border border-ink-200/70 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-soft",
-        className
+      className={twMerge(
+        clsx(
+          "rounded-2xl border border-ink-200/70 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-soft",
+          className
+        )
       )}
       {...props}
     />

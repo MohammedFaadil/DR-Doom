@@ -2,12 +2,18 @@
 
 Two ways to deploy:
 
-- **Option A — Blueprint (fastest):** push this repo to GitHub, then in Render
-  click **New → Blueprint**, point it at the repo, and Render reads
-  [`render.yaml`](render.yaml) to create the database, backend, and frontend
-  in one go. Skip to [step 11](#11-verify-the-health-endpoint) once it's
-  deployed, then fill in `CORS_ORIGINS` / `VITE_API_URL` with the real
-  generated URLs if they differ from the guessed defaults in the blueprint.
+- **Option A — Blueprint (fastest, recommended):** push this repo to
+  GitHub, then in Render click **New → Blueprint**, point it at the repo.
+  Render reads [`render.yaml`](render.yaml) and creates the database,
+  backend, and frontend in one go — you'll be prompted once for
+  `GROQ_API_KEY` (grab a free one at
+  [console.groq.com/keys](https://console.groq.com/keys) first; see
+  [§1](#0-get-a-free-groq-api-key)). Everything else in the blueprint is
+  pre-filled. Once deployed, skip to
+  [step 11](#11-verify-the-health-endpoint) — `CORS_ORIGINS` and
+  `VITE_API_URL` are already set to Render's default hostname pattern for
+  services named `drdoom-backend`/`drdoom-frontend`; only edit them if you
+  renamed a service.
 - **Option B — Manual (full control):** follow steps 1–14 below.
 
 > **Read this first:** Render's **Free** Postgres plan is time/size limited
@@ -15,6 +21,17 @@ Two ways to deploy:
 > normal). This setup is a genuine, fully-functional demo/prototype
 > deployment — not a promise of permanent medical-record storage or
 > production-grade uptime. See README.md → "Render Free storage constraint".
+> The AI provider (Groq) runs on Groq's own infrastructure, not in this
+> app's container, so the **Free** plan gets real LLM-powered answers too —
+> no paid Render plan needed for full functionality.
+
+## 0. Get a free Groq API key
+
+Sign up at [console.groq.com](https://console.groq.com), then
+[console.groq.com/keys](https://console.groq.com/keys) → **Create API
+Key**. Groq's free tier is generous and has no cost to start. Keep the key
+somewhere safe — you'll paste it into Render's dashboard (step 5 or the
+Blueprint prompt), never into a file that gets committed to git.
 
 ---
 
@@ -76,7 +93,9 @@ full annotated list):
 | `SECRET_KEY` | a long random string (Render can auto-generate one) |
 | `COOKIE_SECURE` | `true` |
 | `COOKIE_SAMESITE` | `none` (frontend/backend are different subdomains — see README "Privacy") |
-| `MODEL_PROVIDER` | `template` (recommended for Free tier — see README "Model architecture") |
+| `MODEL_PROVIDER` | `groq` (the production default — see README "Model architecture") |
+| `GROQ_API_KEY` | your key from [step 0](#0-get-a-free-groq-api-key) — mark it **Secret** in Render's env var UI |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` |
 | `VECTOR_INDEX_PATH` | `knowledge_base/index` |
 | `KNOWLEDGE_VERSION` | `2026.08.1` |
@@ -89,7 +108,7 @@ Click **Create Web Service**. First deploy takes a few minutes (installing
 `faiss-cpu`, `onnxruntime`, etc.). Watch the logs for:
 
 ```
-DR DOOM starting up (environment=production, model_provider=template)
+DR DOOM starting up (environment=production, model_provider=groq)
 Loaded knowledge base index: 476 chunks
 DR DOOM startup complete.
 ```
@@ -171,8 +190,13 @@ red emergency banner immediately.
   and redeploy.
 - **Login works locally but not on Render:** almost always a cookie
   `SameSite`/`Secure` or `CORS_ORIGINS` mismatch — see step 12.
-- **Model provider shows `template_fallback` in `/api/admin/overview`:**
-  expected if `MODEL_PROVIDER` is set to `local_transformers` or `ollama`
-  but that backend isn't actually available in this environment — the app
-  is falling back safely rather than failing (§47). Free tier RAM cannot
-  reliably host `local_transformers` — leave `MODEL_PROVIDER=template`.
+- **Answers read like a plain evidence dump instead of a natural response:**
+  the app is silently falling back to `template` per-request rather than
+  failing (§47) — check the small provider badge next to "New" in the chat
+  header (only shown when a real LLM answered; hidden on template/fallback)
+  to confirm. Usually means `GROQ_API_KEY` is missing or invalid — note
+  that `/api/admin/overview`'s `model.available` only checks the key is
+  *present*, not that it actually works, so it can show `true` even with a
+  bad key. Verify the key directly at
+  [console.groq.com/keys](https://console.groq.com/keys) and check the
+  backend logs for a "Groq ... failed" line.

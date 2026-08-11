@@ -14,13 +14,38 @@ import {
   Activity,
   Sparkles,
   ShieldCheck,
+  Lightbulb,
+  Mic,
 } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { RiskBadge } from "@/components/common/RiskBadge";
 import { Reveal } from "@/components/common/Reveal";
 import { useAuthStore } from "@/stores/authStore";
+import { useVoice } from "@/hooks/useVoice";
 import { conversationsApi, ConversationStats } from "@/services/conversations";
 import type { ConversationCard } from "@/types/api";
+
+// General wellness tips — clearly generic public-health reminders, never
+// framed as personalized advice (that only ever comes from a grounded
+// consultation). Rotates deterministically by day-of-year so it's stable
+// across re-renders/refreshes within the same day, not random per-render.
+const WELLNESS_TIPS = [
+  "Adults typically need 7-9 hours of sleep — consistent sleep and wake times matter as much as total hours.",
+  "Aim for at least 2 liters of water a day, more if it's hot or you're active — thirst is a lagging signal.",
+  "Hand-washing for 20 seconds is still one of the most effective ways to avoid common infections.",
+  "Regular movement — even a 10-minute walk — measurably helps mood and cardiovascular health.",
+  "Annual check-ups catch problems early, even when you feel completely fine.",
+  "Screen time before bed can delay sleep onset — a short wind-down routine helps.",
+  "Most colds resolve in 7-10 days; symptoms lasting longer or worsening are worth a second look.",
+  "Reading medication labels fully — including interactions — takes a minute and prevents most avoidable errors.",
+];
+
+function tipOfTheDay(): string {
+  const dayOfYear = Math.floor(
+    (Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86_400_000
+  );
+  return WELLNESS_TIPS[dayOfYear % WELLNESS_TIPS.length];
+}
 
 const QUICK_ACTIONS = [
   {
@@ -60,6 +85,7 @@ function relativeDate(iso: string): string {
 
 export function Dashboard() {
   const { user } = useAuthStore();
+  const { sttSupported, ttsSupported } = useVoice();
   const [recent, setRecent] = useState<ConversationCard[]>([]);
   const [stats, setStats] = useState<ConversationStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -270,6 +296,21 @@ export function Dashboard() {
             )}
 
             <Reveal delay={180}>
+              <Card className="relative overflow-hidden border-amber-200/70 bg-amber-50/60 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
+                <div className="mb-2 flex items-center gap-2">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-100 text-amber-600 dark:bg-amber-900/60 dark:text-amber-400">
+                    <Lightbulb className="h-3.5 w-3.5" />
+                  </div>
+                  <p className="text-sm font-semibold text-ink-800 dark:text-ink-100">Wellness tip</p>
+                </div>
+                <p className="text-xs leading-relaxed text-ink-600 dark:text-ink-400">{tipOfTheDay()}</p>
+                <p className="mt-2 text-[10px] font-medium uppercase tracking-wide text-amber-600/80 dark:text-amber-400/70">
+                  General reminder, not personalized advice
+                </p>
+              </Card>
+            </Reveal>
+
+            <Reveal delay={220}>
               <Card className="border-brand-200/70 dark:border-brand-900 bg-brand-50/50 dark:bg-brand-950/30 p-4">
                 <div className="mb-2 flex items-center gap-2">
                   <ShieldCheck className="h-4 w-4 text-brand-600 dark:text-brand-400" />
@@ -281,6 +322,21 @@ export function Dashboard() {
                 </p>
               </Card>
             </Reveal>
+
+            {(sttSupported || ttsSupported) && (
+              <Reveal delay={260}>
+                <Card className="p-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <Mic className="h-4 w-4 text-ink-500 dark:text-ink-400" />
+                    <p className="text-sm font-semibold text-ink-800 dark:text-ink-100">Voice ready</p>
+                  </div>
+                  <p className="text-xs leading-relaxed text-ink-600 dark:text-ink-400">
+                    Your browser supports {sttSupported && ttsSupported ? "speaking and listening" : sttSupported ? "voice input" : "read-aloud"} —
+                    tap the mic in any consultation to try it.
+                  </p>
+                </Card>
+              </Reveal>
+            )}
           </div>
         </div>
       </div>

@@ -1,21 +1,34 @@
 """
 Pluggable generation-provider registry (§3, §47, §77).
 
-Every provider implements the same narrow interface: given already-composed,
+Most providers implement a narrow interface: given already-composed,
 evidence-grounded section text, optionally *rephrase* it in plainer
-language. Providers are NEVER asked to invent new medical facts — the
-sections themselves are built deterministically by
-app/agents/explanation.py from retrieved evidence + structured patient
-state (§17: evidence -> clinical interpretation -> explanation, not
-LLM -> diagnosis). The GroundingValidator (app/safety/grounding_validator.py)
-re-checks whatever a provider returns before it ever reaches the user, so
-even LOCAL_TRANSFORMERS mode cannot introduce ungrounded claims that survive.
+language — they are NEVER asked to invent new medical facts, since the
+sections themselves are built deterministically by app/agents/explanation.py
+from retrieved evidence + structured patient state (§17: evidence ->
+clinical interpretation -> explanation, not LLM -> diagnosis). One provider
+(Groq) is capable enough to do more: compose the answer directly from raw
+evidence + conversation history (see `supports_full_generation` and
+explanation.py::_generate_grounded). Either way, the GroundingValidator
+(app/safety/grounding_validator.py) re-checks whatever a provider returns
+before it ever reaches the user, so no provider — however capable — can
+introduce an ungrounded claim that survives to the response.
 
 Providers:
+  * groq                 Groq-hosted large model (default: Llama 3.3 70B
+                         Versatile) via their OpenAI-compatible API — LPU
+                         inference, fast even at 70B. The production
+                         default (needs GROQ_API_KEY; see README.md). No
+                         local RAM cost — runs on Groq's infrastructure,
+                         so it's the one provider unaffected by Render
+                         Free's 512MB limit. The only provider with
+                         supports_full_generation=True.
   * template            deterministic, zero extra RAM/CPU, always available.
-                         Returns the composed text unchanged. The default —
-                         see below for why — and the ModelManager's own
-                         fallback if a heavier provider fails.
+                         Returns the composed text unchanged. The
+                         ModelManager's automatic fallback if Groq (or any
+                         other configured provider) is unavailable, fails,
+                         or under-delivers (see explanation.py's
+                         `_rephrase_or_fallback` / `_generate_grounded`).
   * llama_cpp            quantized GGUF model via llama.cpp (needs
                          requirements-llm.txt), lazy-loaded on first use, no
                          torch dependency. Real measurement on the default
@@ -24,8 +37,8 @@ Providers:
                          ~350-450MB RSS on top of this app's ~226MB
                          resting footprint (embeddings + FAISS + FastAPI +
                          DB pool) — i.e. 600-670MB total, over Render
-                         Free's 512MB. Good fit for Render's paid Starter
-                         tier (2GB) or any host with >768MB free.
+                         Free's 512MB. For offline/local testing without an
+                         API key, or a host with >768MB free.
   * local_transformers   small local HF instruct model via `transformers`
                          (needs requirements-full.txt, includes torch —
                          ~2GB+ RSS even for a 0.5B model in fp32). Useful
@@ -33,11 +46,10 @@ Providers:
                          than llama_cpp for equivalent output quality.
   * ollama               calls a locally-running Ollama server over HTTP.
 
-`template` is the default because it is the only provider guaranteed to
-run within Render Free's 512MB alongside the rest of this app — see
-README.md for the measured numbers behind that call. Swap providers purely
-via MODEL_PROVIDER in the environment — no code changes required anywhere
-else in the app.
+`groq` is the production default (needs GROQ_API_KEY). `template` is the
+zero-dependency fallback that works everywhere, including Render Free,
+with no API key at all. Swap providers purely via MODEL_PROVIDER in the
+environment — no code changes required anywhere else in the app.
 """
 from __future__ import annotations
 
@@ -53,6 +65,12 @@ logger = logging.getLogger("drdoom.model")
 class GenerationProvider(ABC):
     name: str = "base"
 
+    # True only for providers capable enough to compose an answer directly
+    # from raw retrieved evidence + conversation history (currently just
+    # Groq) rather than only rephrasing text app/agents/explanation.py
+    # already deterministically composed. See generate_answer() below.
+    supports_full_generation: bool = False
+
     @abstractmethod
     def rephrase(self, composed_text: str, *, style: str = "plain") -> str:
         """Optionally rewrite already-grounded, already-composed text in
@@ -62,6 +80,15 @@ class GenerationProvider(ABC):
 
     def is_available(self) -> bool:
         return True
+
+    def generate_answer(self, system_prompt: str, messages: list[dict], *, max_tokens: int | None = None) -> str | None:
+        """Compose an answer directly from a system prompt (expected to
+        embed the retrieved evidence — see explanation.py) + a messages
+        array (conversation history + final task instruction). Only
+        providers with supports_full_generation=True need implement this;
+        the default returns None so callers fall back to the deterministic
+        template composer, same as any other generation failure."""
+        return None
 
 
 class TemplateProvider(GenerationProvider):
@@ -92,6 +119,88 @@ _REPHRASE_SYSTEM_PROMPT = (
     "- Do not add new sections, new headings, or a new closing summary.\n"
     "- If unsure how to improve a sentence, leave it as-is rather than guessing."
 )
+
+
+class GroqProvider(GenerationProvider):
+    """Groq-hosted model via their OpenAI-compatible Chat Completions API
+    (LPU inference — very fast even for large models like Llama 3.3 70B).
+
+    This is the only provider with supports_full_generation=True: instead
+    of only rephrasing text app/agents/explanation.py already
+    deterministically assembled, the explanation agent hands it the raw
+    retrieved evidence + recent conversation history + a task instruction
+    and lets it compose the answer directly (see
+    explanation.py::_generate_grounded). This is what makes Groq mode
+    actually context-aware ("you mentioned earlier that...") rather than
+    just plain-language rewriting.
+
+    This is still not a blank check to hallucinate: the system prompt
+    passed in by the caller is a strict grounded-RAG prompt (evidence-only,
+    no invented conditions/drugs, use the evidence's own wording where
+    possible), and GroundingValidator re-checks the output afterward
+    exactly like every other provider — a capable model lowers *how often*
+    the safety net has to catch something, it doesn't remove the net.
+
+    No local RAM cost at all (the model runs on Groq's infrastructure) —
+    the only requirement is GROQ_API_KEY. If unset, is_available() is
+    False and ModelManager falls back to template automatically.
+    """
+
+    name = "groq"
+    supports_full_generation = True
+
+    def __init__(self, api_key: str, model_name: str, max_tokens: int, temperature: float, base_url: str) -> None:
+        self.api_key = api_key
+        self.model_name = model_name
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.base_url = base_url.rstrip("/")
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    def _call(self, messages: list[dict], *, max_tokens: int | None = None) -> str:
+        import httpx
+
+        r = httpx.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            json={
+                "model": self.model_name,
+                "messages": messages,
+                "max_tokens": max_tokens or self.max_tokens,
+                "temperature": self.temperature,
+            },
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return (data["choices"][0]["message"]["content"] or "").strip()
+
+    def rephrase(self, composed_text: str, *, style: str = "plain") -> str:
+        if not self.is_available():
+            return composed_text
+        try:
+            text = self._call(
+                [
+                    {"role": "system", "content": _REPHRASE_SYSTEM_PROMPT},
+                    {"role": "user", "content": composed_text},
+                ]
+            )
+            return text or composed_text
+        except Exception:  # noqa: BLE001
+            logger.exception("Groq rephrase failed; returning template text unchanged.")
+            return composed_text
+
+    def generate_answer(self, system_prompt: str, messages: list[dict], *, max_tokens: int | None = None) -> str | None:
+        if not self.is_available():
+            return None
+        try:
+            full_messages = [{"role": "system", "content": system_prompt}, *messages]
+            return self._call(full_messages, max_tokens=max_tokens) or None
+        except Exception:  # noqa: BLE001
+            logger.exception("Groq generate_answer failed.")
+            return None
 
 
 class LlamaCppProvider(GenerationProvider):
@@ -343,6 +452,14 @@ class OllamaProvider(GenerationProvider):
 
 
 def build_provider(settings: Settings) -> GenerationProvider:
+    if settings.MODEL_PROVIDER == "groq":
+        return GroqProvider(
+            settings.GROQ_API_KEY,
+            settings.GROQ_MODEL,
+            settings.MODEL_MAX_TOKENS,
+            settings.MODEL_TEMPERATURE,
+            settings.GROQ_BASE_URL,
+        )
     if settings.MODEL_PROVIDER == "llama_cpp":
         return LlamaCppProvider(
             settings.LLAMACPP_MODEL_PATH,

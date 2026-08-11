@@ -1,6 +1,16 @@
 # Render Blueprint — see DEPLOY_RENDER.md for the full manual walkthrough.
-# `render.yaml` lets you deploy everything (Postgres + backend + frontend)
-# in one "New Blueprint Instance" action from the Render dashboard.
+# `render.yaml` lets you deploy everything this app needs — Postgres
+# database (users/auth, conversations, everything), backend API, frontend —
+# in one "New Blueprint Instance" action from the Render dashboard. You'll
+# be prompted once for GROQ_API_KEY (get a free one at
+# https://console.groq.com/keys); every other value below is either
+# generated or already filled in.
+#
+# Because the AI provider (Groq) runs on Groq's own infrastructure rather
+# than in this app's container, the whole stack — including real LLM-
+# powered answers, not just the deterministic fallback — runs on Render's
+# FREE plan for both services. No paid plan required for full
+# functionality.
 #
 # NOTE (§25): Render's free Postgres plan has a limited retention/lifespan.
 # This is a demo/prototype deployment target, not permanent medical-record
@@ -35,27 +45,26 @@ services:
         value: none
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: "60"
-      # template = deterministic, zero extra RAM — the only provider that
-      # reliably fits Render Free's 512MB alongside this app's ~226MB
-      # resting footprint (measured; see app/core/model_registry.py).
-      # Upgrading to Render's paid Starter plan (2GB)? Change this one
-      # value to `llama_cpp` and redeploy — no code or Dockerfile changes
-      # needed, the model dependencies are already installed in the image
-      # and the GGUF model downloads once on first use.
+      # groq = Groq-hosted Llama 3.3 70B via their OpenAI-compatible API —
+      # the production default. Runs on Groq's infrastructure, so it has
+      # zero local RAM cost regardless of Render plan (see
+      # app/core/model_registry.py::GroqProvider). Needs GROQ_API_KEY,
+      # entered below as a Render dashboard secret — get a free key at
+      # https://console.groq.com/keys. If it's ever unset or Groq is
+      # unreachable, ModelManager automatically falls back to `template`
+      # (deterministic, zero dependencies) rather than erroring.
       - key: MODEL_PROVIDER
-        value: template
-      - key: MODEL_NAME
-        value: Qwen/Qwen2.5-0.5B-Instruct
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false # secret — set manually in the Render dashboard, never committed here
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
       - key: MODEL_MAX_TOKENS
-        value: "384"
+        value: "900"
       - key: MODEL_TEMPERATURE
         value: "0.2"
-      - key: LLAMACPP_CTX
-        value: "640"
-      - key: LLAMACPP_THREADS
-        value: "2"
-      - key: LLAMACPP_BATCH
-        value: "64"
+      - key: CONVERSATION_HISTORY_TURNS
+        value: "8"
       - key: EMBEDDING_MODEL
         value: BAAI/bge-small-en-v1.5
       - key: VECTOR_INDEX_PATH

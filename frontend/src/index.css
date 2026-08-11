@@ -46,6 +46,20 @@ html {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Nearly everything in this app (text sizes, padding, gaps, icon
+   dimensions) is sized in rem via Tailwind's defaults, so bumping the
+   root font-size scales the whole UI together consistently — this is
+   what previously required manually zooming the browser to ~125% to read
+   comfortably; baking that in here means 100% zoom now looks right by
+   default. Scoped to md+ only: phone screens are already compact by
+   design (separate mobile-specific layouts throughout), and a 25% bump
+   there risks overflow rather than fixing anything. */
+@media (min-width: 768px) {
+  html {
+    font-size: 110%;
+  }
+}
+
 body {
   @apply bg-ink-50 text-ink-900 dark:bg-ink-950 dark:text-ink-100;
   font-feature-settings: "cv11", "ss01";

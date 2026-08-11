@@ -71,6 +71,7 @@ def process_turn(
     answer_question: Question | None = None,
     answer_value: str | int | float | bool | None = None,
     is_first_turn: bool = False,
+    history: list[dict] | None = None,
 ) -> TurnResult:
     working_state = dict(state)
 
@@ -129,8 +130,8 @@ def process_turn(
         if intent == "medication_question":
             return _handle_medication(working_state, user_text)
         if intent == "factual_question":
-            return _handle_factual(working_state, user_text)
-        return _handle_symptom_assessment(working_state, user_text, is_first_turn)
+            return _handle_factual(working_state, user_text, history)
+        return _handle_symptom_assessment(working_state, user_text, is_first_turn, history)
     except IndexUnavailable:
         return TurnResult(
             state=working_state,
@@ -153,9 +154,9 @@ def _handle_medication(state: dict, user_text: str) -> TurnResult:
     )
 
 
-def _handle_factual(state: dict, user_text: str) -> TurnResult:
+def _handle_factual(state: dict, user_text: str, history: list[dict] | None = None) -> TurnResult:
     retrieval = retrieve_evidence(state, user_text)
-    output = compose_factual_answer(retrieval)
+    output = compose_factual_answer(retrieval, user_text, history)
     response_type = "text" if output.evidence else "insufficient_evidence"
     message = output.message if output.evidence else no_evidence_message(user_text)
     return TurnResult(
@@ -171,7 +172,9 @@ def _handle_factual(state: dict, user_text: str) -> TurnResult:
     )
 
 
-def _handle_symptom_assessment(state: dict, user_text: str, is_first_turn: bool) -> TurnResult:
+def _handle_symptom_assessment(
+    state: dict, user_text: str, is_first_turn: bool, history: list[dict] | None = None
+) -> TurnResult:
     next_question = select_next_question(state)
     if next_question is not None:
         intro = ""
@@ -191,7 +194,7 @@ def _handle_symptom_assessment(state: dict, user_text: str, is_first_turn: bool)
 
     # No more questions -> retrieve evidence and produce the assessment.
     retrieval = retrieve_evidence(state, user_text)
-    output = compose_assessment(state, retrieval)
+    output = compose_assessment(state, retrieval, history)
     risk_level = _estimate_risk_level(state)
     state = dict(state)
     state["risk_level"] = risk_level

@@ -4,6 +4,7 @@ export interface User {
   full_name: string | null;
   is_admin: boolean;
   preferred_language: string;
+  created_at: string;
 }
 
 export interface HealthProfile {
@@ -118,4 +119,5 @@ export interface ChatResponse {
     missing_information?: string[];
     [key: string]: unknown;
   };
+  grounding_confidence: number;
 }

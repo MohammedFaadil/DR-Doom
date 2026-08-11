@@ -110,17 +110,29 @@ export function Landing() {
               <p className="text-[10px] text-ink-500 dark:text-ink-400">Evidence-grounded AI</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <a href="#how-it-works" className="hidden sm:block text-sm font-medium text-ink-600 dark:text-ink-300 hover:text-ink-900 dark:hover:text-white">
-              How it works
-            </a>
-            <a href="#safety" className="hidden sm:block text-sm font-medium text-ink-600 dark:text-ink-300 hover:text-ink-900 dark:hover:text-white">
-              Safety
-            </a>
-            <Link to="/login" className="text-sm font-medium text-ink-600 dark:text-ink-300 hover:text-ink-900 dark:hover:text-white">
+          <div className="flex items-center gap-1 sm:gap-2">
+            <nav className="hidden items-center gap-1 sm:flex">
+              <a
+                href="#how-it-works"
+                className="rounded-lg px-3 py-2 text-sm font-medium text-ink-600 transition-colors hover:bg-ink-100 hover:text-ink-900 dark:text-ink-300 dark:hover:bg-ink-800 dark:hover:text-white"
+              >
+                How it works
+              </a>
+              <a
+                href="#safety"
+                className="rounded-lg px-3 py-2 text-sm font-medium text-ink-600 transition-colors hover:bg-ink-100 hover:text-ink-900 dark:text-ink-300 dark:hover:bg-ink-800 dark:hover:text-white"
+              >
+                Safety
+              </a>
+            </nav>
+            <div className="mx-1 hidden h-5 w-px bg-ink-200 dark:bg-ink-800 sm:block" />
+            <Link
+              to="/login"
+              className="rounded-lg px-3 py-2 text-sm font-medium text-ink-600 transition-colors hover:bg-ink-100 hover:text-ink-900 dark:text-ink-300 dark:hover:bg-ink-800 dark:hover:text-white"
+            >
               Sign in
             </Link>
-            <Link to="/register">
+            <Link to="/register" className="ml-1">
               <Button size="sm">Get started</Button>
             </Link>
           </div>
@@ -136,7 +148,7 @@ export function Landing() {
           <div className="relative mx-auto max-w-6xl px-6 py-20 text-center md:py-28">
             <div className="mx-auto mb-6 inline-flex animate-fade-in-slow items-center gap-2 rounded-full border border-brand-200 dark:border-brand-800 bg-white/70 dark:bg-brand-950/40 px-4 py-1.5 text-xs font-medium text-brand-700 dark:text-brand-300 backdrop-blur">
               <Sparkles className="h-3.5 w-3.5" />
-              Evidence-grounded · Real NIH sources · No API key required
+              Evidence-grounded · Real NIH sources · Free to use
             </div>
 
             <h1 className="animate-fade-up text-4xl font-extrabold leading-[1.1] tracking-tight text-ink-900 dark:text-white sm:text-6xl md:text-7xl">

@@ -44,22 +44,43 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173"
 
     # --- Model layer ---
-    # llama_cpp = quantized GGUF model via llama.cpp (CPU, no torch). NOT
-    # the default — measured directly (see model_registry.py): the app's
-    # existing RAG stack (embeddings + FAISS + FastAPI + DB pool) already
-    # uses ~226MB RSS at rest, and even the smallest instruct model small
-    # enough to be reliable (not prone to fabricating clinical claims —
-    # sub-200M models tested as unsafe) adds another ~350-450MB, pushing
-    # total RSS to 600-670MB. That's over Render Free's 512MB. `template`
-    # stays the default for that plan; switch to `llama_cpp` once deployed
-    # somewhere with more headroom (e.g. Render's paid Starter, 2GB) — it's
-    # a one-line env var change, no code changes needed.
-    MODEL_PROVIDER: Literal["template", "llama_cpp", "local_transformers", "ollama"] = "template"
+    # groq = Groq-hosted large model (Llama 3.3 70B Versatile by default)
+    # via their OpenAI-compatible API — the production default. Runs on
+    # Groq's infrastructure, so it has zero local RAM cost and is
+    # unaffected by Render Free's 512MB limit; the only requirement is
+    # GROQ_API_KEY. If that's unset, ModelManager automatically falls back
+    # to `template` (deterministic, zero dependencies, always works) —
+    # the app never crashes or breaks just because a key is missing.
+    #
+    # llama_cpp = quantized GGUF model via llama.cpp (CPU, no torch), for
+    # local/offline testing without an API key. Measured directly (see
+    # model_registry.py): the app's existing RAG stack (embeddings + FAISS
+    # + FastAPI + DB pool) already uses ~226MB RSS at rest, and even the
+    # smallest instruct model small enough to be reliable (not prone to
+    # fabricating clinical claims — sub-200M models tested as unsafe) adds
+    # another ~350-450MB, pushing total RSS to 600-670MB — over Render
+    # Free's 512MB. Fine for local dev or a host with more headroom (e.g.
+    # Render's paid Starter, 2GB).
+    MODEL_PROVIDER: Literal["groq", "template", "llama_cpp", "local_transformers", "ollama"] = "groq"
     MODEL_NAME: str = "Qwen/Qwen2.5-0.5B-Instruct"
     MODEL_QUANTIZATION: str = "none"
-    MODEL_MAX_TOKENS: int = 384
+    MODEL_MAX_TOKENS: int = 900
     MODEL_TEMPERATURE: float = 0.2
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+
+    # --- groq provider ---
+    # Get a free key at https://console.groq.com/keys — never commit a real
+    # value here or in render.yaml; set it as a Render dashboard secret /
+    # local .env (both gitignored). Empty by default so a fresh clone
+    # degrades safely to `template` instead of crashing on a missing key.
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    # How many of the most recent conversation messages to include as real
+    # chat history in the Groq prompt (see explanation.py::_recent_history)
+    # — bounds prompt size/cost/latency rather than sending the whole
+    # conversation on every turn.
+    CONVERSATION_HISTORY_TURNS: int = 8
 
     # --- llama_cpp provider ---
     # SmolLM2-360M-Instruct, not Qwen: Qwen's ~152K-token vocabulary makes
@@ -80,9 +101,9 @@ class Settings(BaseSettings):
     # --- Embeddings / retrieval ---
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
     VECTOR_INDEX_PATH: str = str(BACKEND_ROOT / "knowledge_base" / "index")
-    HYBRID_SEMANTIC_WEIGHT: float = 0.70
-    HYBRID_KEYWORD_WEIGHT: float = 0.30
-    RETRIEVAL_TOP_K: int = 6
+    HYBRID_SEMANTIC_WEIGHT: float = 0.65
+    HYBRID_KEYWORD_WEIGHT: float = 0.35
+    RETRIEVAL_TOP_K: int = 8
     GROUNDING_MIN_SIMILARITY: float = 0.42
 
     KNOWLEDGE_VERSION: str = "2026.08.1"

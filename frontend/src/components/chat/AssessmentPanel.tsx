@@ -1,4 +1,5 @@
-import { ClipboardList, ExternalLink } from "lucide-react";
+import { ClipboardList, ExternalLink, ShieldCheck } from "lucide-react";
+import clsx from "clsx";
 import { Card } from "@/components/common/Card";
 import { RiskBadge } from "@/components/common/RiskBadge";
 import type { Citation } from "@/types/api";
@@ -14,9 +15,10 @@ interface Props {
   patientState: PatientStateShape;
   riskLevel: string;
   evidence: Citation[];
+  groundingConfidence?: number;
 }
 
-export function AssessmentPanel({ patientState, riskLevel, evidence }: Props) {
+export function AssessmentPanel({ patientState, riskLevel, evidence, groundingConfidence }: Props) {
   const symptoms = patientState.symptoms || [];
 
   return (
@@ -64,6 +66,27 @@ export function AssessmentPanel({ patientState, riskLevel, evidence }: Props) {
         </p>
       </Card>
 
+      {groundingConfidence !== undefined && groundingConfidence > 0 && (
+        <Card className="p-4">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400">
+            <ShieldCheck className="h-3.5 w-3.5" /> Grounding confidence
+          </p>
+          <div className="mb-1.5 h-2 w-full overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+            <div
+              className={clsx(
+                "h-full rounded-full transition-all",
+                groundingConfidence >= 0.6 ? "bg-emerald-500" : "bg-amber-500"
+              )}
+              style={{ width: `${Math.round(groundingConfidence * 100)}%` }}
+            />
+          </div>
+          <p className="text-[11px] text-ink-500 dark:text-ink-400">
+            {Math.round(groundingConfidence * 100)}% of the last answer's claims matched cited sources closely — the
+            rest was automatically removed rather than shown unverified.
+          </p>
+        </Card>
+      )}
+
       <Card className="p-4">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400">
           Evidence ({evidence.length})
@@ -71,7 +94,7 @@ export function AssessmentPanel({ patientState, riskLevel, evidence }: Props) {
         {evidence.length === 0 ? (
           <p className="text-sm text-ink-400">No sources retrieved yet</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-2.5">
             {evidence.map((e, i) => (
               <li key={`${e.url}-${i}`}>
                 <a
@@ -85,6 +108,17 @@ export function AssessmentPanel({ patientState, riskLevel, evidence }: Props) {
                     {e.organization} — {e.title}
                   </span>
                 </a>
+                {e.score !== undefined && e.score > 0 && (
+                  <div className="mt-1 flex items-center gap-1.5 pl-4.5">
+                    <div className="h-1 w-16 overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+                      <div
+                        className="h-full rounded-full bg-brand-400"
+                        style={{ width: `${Math.round(Math.min(e.score, 1) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-ink-400">{Math.round(Math.min(e.score, 1) * 100)}% relevant</span>
+                  </div>
+                )}
               </li>
             ))}
           </ul>

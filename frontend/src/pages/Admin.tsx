@@ -26,7 +26,7 @@ export function Admin() {
   if (!data) return <div className="flex-1 p-10 text-sm text-ink-400">Loading diagnostics…</div>;
 
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-thin">
+    <div className="flex-1 overflow-y-auto scrollbar-thin pb-24 md:pb-0">
       <div className="mx-auto max-w-5xl px-6 py-10">
         <h1 className="mb-1 text-2xl font-bold text-ink-900 dark:text-white">Admin diagnostics</h1>
         <p className="mb-8 text-sm text-ink-500 dark:text-ink-400">Live system health — no patient content shown.</p>

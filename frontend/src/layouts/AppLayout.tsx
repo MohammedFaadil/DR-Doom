@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useEffect } from "react";
 import {
   Stethoscope,
@@ -49,7 +49,7 @@ export function AppLayout() {
     <div className="flex h-screen overflow-hidden bg-ink-50 dark:bg-ink-950">
       {/* Desktop sidebar */}
       <aside className="hidden md:flex w-64 shrink-0 flex-col border-r border-ink-200/70 dark:border-ink-800 bg-white dark:bg-ink-900">
-        <div className="flex items-center gap-2 px-5 py-5">
+        <Link to="/app" className="flex items-center gap-2 px-5 py-5 transition-opacity hover:opacity-80">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-600 text-white shadow-soft">
             <Stethoscope className="h-5 w-5" />
           </div>
@@ -57,7 +57,7 @@ export function AppLayout() {
             <p className="text-sm font-bold leading-tight">DR DOOM</p>
             <p className="text-[10px] text-ink-500 dark:text-ink-400 leading-tight">Evidence-grounded AI</p>
           </div>
-        </div>
+        </Link>
 
         <nav className="flex-1 space-y-1 px-3">
           {NAV_ITEMS.map((item) => (
@@ -108,8 +108,11 @@ export function AppLayout() {
           <button
             type="button"
             onClick={async () => {
+              // logout() never throws (see authStore) — clears local auth
+              // state regardless of whether the server call succeeded, so
+              // this navigation always runs and the user is never stuck.
               await logout();
-              navigate("/login");
+              navigate("/");
             }}
             className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
           >
