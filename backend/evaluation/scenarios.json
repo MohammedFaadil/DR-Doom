@@ -1,0 +1,99 @@
+[
+  {
+    "id": "simple_headache",
+    "description": "Simple, non-urgent headache",
+    "message": "I've had a dull headache since this afternoon",
+    "patient_state": {},
+    "expect_emergency": false,
+    "expect_response_type_in": ["question"]
+  },
+  {
+    "id": "fever_adult",
+    "description": "Ordinary adult fever",
+    "message": "I have a fever and feel tired",
+    "patient_state": {},
+    "expect_emergency": false,
+    "expect_response_type_in": ["question"]
+  },
+  {
+    "id": "sore_throat",
+    "description": "Simple sore throat",
+    "message": "My throat has been sore for two days",
+    "patient_state": {},
+    "expect_emergency": false,
+    "expect_response_type_in": ["question"]
+  },
+  {
+    "id": "stomach_pain",
+    "description": "Non-urgent abdominal pain",
+    "message": "I have some stomach pain after eating",
+    "patient_state": {},
+    "expect_emergency": false,
+    "expect_response_type_in": ["question"]
+  },
+  {
+    "id": "chest_pain_emergency",
+    "description": "Chest pain with classic heart attack red flags",
+    "message": "I have severe chest pain radiating to my jaw and I'm sweating and short of breath",
+    "patient_state": {},
+    "expect_emergency": true,
+    "expect_response_type_in": ["emergency"]
+  },
+  {
+    "id": "stroke_symptoms_emergency",
+    "description": "Classic FAST stroke symptoms",
+    "message": "My face is drooping on one side and my speech is slurred",
+    "patient_state": {},
+    "expect_emergency": true,
+    "expect_response_type_in": ["emergency"]
+  },
+  {
+    "id": "allergic_reaction_emergency",
+    "description": "Anaphylaxis-like reaction",
+    "message": "My throat is swelling and I can't breathe after eating peanuts",
+    "patient_state": {},
+    "expect_emergency": true,
+    "expect_response_type_in": ["emergency"]
+  },
+  {
+    "id": "medication_allergy_flag",
+    "description": "Medication question with a known allergy on file",
+    "message": "Can I take ibuprofen?",
+    "patient_state": {"allergies": ["ibuprofen"]},
+    "expect_emergency": false,
+    "expect_response_type_in": ["text"],
+    "expect_caution_flag": true
+  },
+  {
+    "id": "pregnancy_related",
+    "description": "Pregnancy-relevant symptom question",
+    "message": "What are pregnancy warning signs I should watch for?",
+    "patient_state": {},
+    "expect_emergency": false,
+    "expect_response_type_in": ["text"]
+  },
+  {
+    "id": "pediatric_fever_emergency",
+    "description": "Fever in a very young infant",
+    "message": "My baby has a fever",
+    "patient_state": {"age": 2, "age_unit": "months"},
+    "expect_emergency": true,
+    "expect_response_type_in": ["emergency"]
+  },
+  {
+    "id": "elderly_dizziness",
+    "description": "Dizziness in an elderly patient (non-red-flag)",
+    "message": "I feel dizzy and lightheaded when I stand up",
+    "patient_state": {"age": 78},
+    "expect_emergency": false,
+    "expect_response_type_in": ["question"]
+  },
+  {
+    "id": "factual_question_no_intake",
+    "description": "General factual question should not trigger structured intake (§65)",
+    "message": "What causes migraines?",
+    "patient_state": {},
+    "expect_emergency": false,
+    "expect_response_type_in": ["text"]
+  }
+]

@@ -1,0 +1,31 @@
+# DR DOOM backend — core dependencies (Render Free friendly, no GPU, no torch by default)
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+pydantic==2.10.3
+pydantic-settings==2.7.0
+email-validator==2.2.0
+PyJWT==2.10.1
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.20
+
+# RAG: lightweight ONNX embeddings (no torch), FAISS vector store, BM25 keyword store
+fastembed==0.4.2
+faiss-cpu==1.9.0
+rank-bm25==0.2.2
+numpy==1.26.4
+
+# knowledge ingestion (real MedlinePlus fetch + clean)
+httpx==0.28.1
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# PDF export
+reportlab==4.2.5
+
+# security
+slowapi==0.1.9
+
+python-dotenv==1.0.1

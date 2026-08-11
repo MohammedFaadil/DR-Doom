@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .input {
+    @apply w-full rounded-xl border border-ink-200 dark:border-ink-700 bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-400;
+  }
+  /* Staggered reveal for grids/lists — set style={{animationDelay}} per item. */
+  .stagger > * {
+    @apply animate-fade-up;
+  }
+  .lift {
+    @apply transition-all duration-300 hover:-translate-y-1 hover:shadow-lg;
+  }
+}
+
+@layer utilities {
+  .text-gradient-brand {
+    @apply bg-gradient-to-r from-brand-600 via-brand-500 to-brand-700 bg-clip-text text-transparent;
+    background-size: 200% auto;
+  }
+  /* Soft radial "aurora" backdrop used behind hero sections. */
+  .aurora {
+    background-image:
+      radial-gradient(38rem 22rem at 12% 8%, rgba(11, 191, 166, 0.16), transparent 60%),
+      radial-gradient(32rem 20rem at 88% 12%, rgba(82, 244, 214, 0.14), transparent 60%),
+      radial-gradient(30rem 24rem at 50% 100%, rgba(15, 122, 111, 0.1), transparent 60%);
+  }
+}
+
+/* Respect users who ask the OS to reduce motion — decorative animation is
+   disabled entirely rather than merely shortened. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  @apply bg-ink-50 text-ink-900 dark:bg-ink-950 dark:text-ink-100;
+  font-feature-settings: "cv11", "ss01";
+}
+
+::selection {
+  @apply bg-brand-200/70 dark:bg-brand-700/50;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  @apply bg-ink-300/70 dark:bg-ink-700/70 rounded-full;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.prose-dr :where(h2) {
+  @apply text-base font-semibold text-brand-700 dark:text-brand-300 mt-4 mb-1.5 first:mt-0;
+}
+.prose-dr :where(h3) {
+  @apply text-sm font-semibold text-ink-700 dark:text-ink-200 mt-3 mb-1;
+}
+.prose-dr :where(p) {
+  @apply mb-2 leading-relaxed;
+}
+.prose-dr :where(ul) {
+  @apply list-disc pl-5 mb-2 space-y-0.5;
+}
+.prose-dr :where(ol) {
+  @apply list-decimal pl-5 mb-2 space-y-0.5;
+}
+.prose-dr :where(strong) {
+  @apply font-semibold;
+}
+.prose-dr :where(a) {
+  @apply text-brand-600 dark:text-brand-400 underline underline-offset-2 hover:text-brand-700;
+}

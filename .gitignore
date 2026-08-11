@@ -1,0 +1,38 @@
+# --- Python / backend ---
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+backend/.env
+backend/*.db
+backend/test_drdoom.db
+backend/uvicorn_out.log
+backend/uvicorn_err.log
+backend/uvicorn.pid
+backend/.pytest_cache/
+
+# Knowledge base: keep the baked index/chunks/metadata (used at runtime and
+# in the Docker image), but not the raw fetched HTML or intermediate
+# "processed" artifacts — those are large and fully reproducible by
+# scripts/ingest_documents.py.
+backend/knowledge_base/raw/
+backend/knowledge_base/processed/
+backend/knowledge_base/embeddings/
+
+# --- Node / frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/vite_out.log
+frontend/vite_err.log
+frontend/vite.pid
+frontend/.tsbuild/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

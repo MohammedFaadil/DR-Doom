@@ -1,0 +1,7 @@
+# OPTIONAL extras for MODEL_PROVIDER=local_transformers (small local instruct model).
+# Not installed by default: adds ~1-2GB of dependencies (torch) that Render Free cannot
+# reliably host. Install this only when deploying to an environment with enough RAM/CPU.
+-r requirements.txt
+transformers==4.47.1
+torch==2.5.1
+accelerate==1.2.1
