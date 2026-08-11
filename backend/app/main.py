@@ -55,6 +55,11 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# IMPORTANT: middleware is applied in reverse order (last added = outermost).
+# SecurityHeadersMiddleware uses BaseHTTPMiddleware which can swallow CORS
+# preflight headers if it wraps CORSMiddleware. Adding SecurityHeaders first
+# means CORSMiddleware runs outermost and handles OPTIONS cleanly.
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -62,7 +67,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.exception_handler(StarletteHTTPException)
