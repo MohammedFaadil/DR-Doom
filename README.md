@@ -1,4 +1,4 @@
-# 🩺 DR DOOM
+# 🩺 DR DOOM Chatbot
 
 **Evidence-grounded health intelligence.**
 
